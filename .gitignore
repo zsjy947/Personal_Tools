@@ -12,6 +12,7 @@ __pycache__/
 
 # Generated output files
 random_data.txt
+downloaded_images/
 
 # OS
 .DS_Store
