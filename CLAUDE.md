@@ -37,6 +37,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 支持 `--dry-run` 预览模式
 - 用法：`python delete_copy_files.py <目录> [--dry-run]`
 
+### download_images.py — 批量下载图片（CLI 工具）
+- 读取 `url.csv` 中的图片 URL 列表，下载到 `downloaded_images/` 文件夹
+- 自动跳过已存在的文件，下载失败时打印错误并继续
+- 支持 `-i/--input` 指定 CSV 路径、`-o/--output` 指定输出目录
+- 依赖：`requests`（已加入 requirements.txt）
+- CSV 默认路径：脚本同目录下的 `url.csv`
+
 ## 环境
 
 - Python 3.10（虚拟环境位于 `.venv/`）
