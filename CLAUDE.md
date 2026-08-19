@@ -18,7 +18,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 调用 ffmpeg 将 .ts 文件转换为 .mp4（`-c copy` 无损封装转换）
 - `ts_to_mp4()`：单个文件转换；`batch_ts_to_mp4()`：批量转换文件夹内所有 .ts 文件
 - 依赖：系统需安装 ffmpeg 并在 PATH 中
-- 使用前需修改 `__main__` 中的硬编码路径 `TS_FOLDER`
+- 需在 `__main__` 中设置 `TS_FOLDER` 路径（当前为占位符 `your_folder_path_here`）
 
 ### modify.py — 文件批量重命名（单层目录）
 - `add_dot1_to_files()`：对指定文件夹内所有文件添加 `.1` 后缀（如 `foo.mp4` → `foo.mp4.1`）
