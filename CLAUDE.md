@@ -44,6 +44,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 依赖：`requests`（已加入 requirements.txt）
 - CSV 默认路径：脚本同目录下的 `url.csv`
 
+### shanghai_metro_fare/ — 上海地铁最短路径与调价前后票价（单功能文件夹）
+- 输入起点站和终点站，输出最短路径、里程，以及现行（2005 机制）/ 听证方案一 / 听证方案二 三套票价
+- `metro_fare.py` 主 CLI：站名模糊匹配、Dijkstra 最短路径（haversine 直线距离 ×1.03 近似轨道里程，经官方示例校准）、区间票价表
+- `index.html` 网页版：自包含单文件（数据内嵌），双击即用，站名自动补全 + 线路配色路径 + 票价对比卡片；模板在 `web_template.html`，数据更新后需跑 `python build_web.py` 重新生成
+- 网页版 JS 与 CLI 算法同构（已在 10 组站点对交叉验证一致），可在 node 中提取 `<script>` 单独测试
+- `fetch_data.py`：从高德地铁 srhdata JSON 抓取并解析 19 条常规线路（1-18 号线 + 浦江线，415 站），排除磁浮线/市域机场线/金山铁路，生成 `data/stations.json` + `edges.json`
+- `python metro_fare.py --selftest` 用官方公布示例自检票价
+- 纯标准库实现（网页版零依赖），Python 3.10+
+
 ## 环境
 
 - Python 3.10（虚拟环境位于 `.venv/`）

@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>上海地铁票价查询 · 调价前后对比</title>
+<style>
+  :root {
+    --bg: #f2f4f7;
+    --card: #ffffff;
+    --text: #1c2333;
+    --muted: #6b7488;
+    --line: #e3e7ee;
+    --accent: #0a7d4f;
+    --accent-soft: #e6f4ee;
+    --warn: #b45309;
+    --warn-soft: #fdf3e3;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+    background: var(--bg); color: var(--text);
+    min-height: 100vh;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 32px 20px 60px; }
+
+  header h1 { font-size: 22px; font-weight: 700; }
+  header p { color: var(--muted); font-size: 13px; margin-top: 6px; line-height: 1.7; }
+
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 14px; box-shadow: 0 1px 3px rgba(16, 24, 40, .06);
+  }
+  .query-card { margin-top: 18px; padding: 20px; }
+  .query-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .field { flex: 1; min-width: 180px; position: relative; }
+  .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+  .field input {
+    width: 100%; padding: 10px 12px; font-size: 15px;
+    border: 1px solid var(--line); border-radius: 9px; outline: none;
+    background: #fbfcfe; color: var(--text);
+  }
+  .field input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .swap-btn {
+    flex: none; width: 36px; height: 36px; margin-top: 21px;
+    border: 1px solid var(--line); border-radius: 50%; background: #fff;
+    font-size: 16px; cursor: pointer; color: var(--muted);
+  }
+  .swap-btn:hover { color: var(--accent); border-color: var(--accent); }
+  .go-btn {
+    flex: none; margin-top: 21px; padding: 10px 26px; font-size: 15px;
+    background: var(--accent); color: #fff; border: none; border-radius: 9px;
+    cursor: pointer; font-weight: 600;
+  }
+  .go-btn:hover { filter: brightness(1.08); }
+
+  .dropdown {
+    position: absolute; top: 100%; left: 0; right: 0; z-index: 20;
+    background: #fff; border: 1px solid var(--line); border-radius: 9px;
+    margin-top: 4px; max-height: 260px; overflow-y: auto;
+    box-shadow: 0 6px 20px rgba(16, 24, 40, .12); display: none;
+  }
+  .dropdown.open { display: block; }
+  .dropdown .item { padding: 9px 12px; cursor: pointer; font-size: 14px; display: flex; gap: 8px; align-items: center; }
+  .dropdown .item:hover, .dropdown .item.active { background: var(--accent-soft); }
+  .dropdown .item .lines { font-size: 11px; color: var(--muted); margin-left: auto; }
+  .dropdown .empty { padding: 10px 12px; color: var(--muted); font-size: 13px; }
+
+  .result-card { margin-top: 18px; padding: 22px; display: none; }
+  .result-card.show { display: block; }
+  .summary { display: flex; gap: 22px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+  .summary b { color: var(--text); font-size: 16px; margin-right: 3px; }
+
+  .route { margin-top: 14px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; }
+  .route .st {
+    background: #f1f3f8; border-radius: 7px; padding: 4px 9px; font-weight: 600;
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .route .st .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .route .run { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+  .route .run .bar { width: 26px; height: 4px; border-radius: 2px; }
+  .route .run .ln { font-size: 11px; }
+  .route .xf {
+    background: var(--warn-soft); color: var(--warn);
+    border-radius: 7px; padding: 3px 8px; font-size: 11px; font-weight: 600;
+  }
+  .route .arr { background: var(--accent-soft); color: var(--accent); border-radius: 7px; padding: 4px 9px; font-weight: 700; }
+
+  .route-block { margin-top: 16px; }
+  .route-block.alt { border: 1px dashed var(--line); border-radius: 10px; padding: 12px 12px 8px; background: #fbfcfe; }
+  .route-head { font-size: 13px; font-weight: 700; margin-bottom: 10px; }
+  .route-head .sub { font-weight: 400; color: var(--muted); font-size: 12px; margin-left: 6px; }
+  .route-note { margin-top: 12px; font-size: 12px; color: var(--muted); background: #f6f8fb;
+    border-radius: 8px; padding: 9px 12px; line-height: 1.7; }
+  .legs { margin-top: 12px; display: grid; gap: 8px; }
+  .leg {
+    display: flex; align-items: center; gap: 10px;
+    background: #f8fafc; border: 1px solid var(--line); border-radius: 9px;
+    padding: 8px 12px; font-size: 13px;
+  }
+  .leg .tag { color: #fff; border-radius: 6px; padding: 2px 8px; font-size: 12px; font-weight: 700; flex: none; }
+  .leg .km { margin-left: auto; color: var(--muted); font-size: 12px; }
+
+  .fares { margin-top: 18px; display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .fare {
+    border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
+    background: #fff; position: relative;
+  }
+  .fare.current { border-color: var(--accent); }
+  .fare .name { font-size: 13px; color: var(--muted); }
+  .fare .note { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .fare .price { font-size: 30px; font-weight: 800; margin-top: 8px; }
+  .fare .price small { font-size: 14px; font-weight: 500; color: var(--muted); }
+  .fare .delta { position: absolute; top: 12px; right: 12px; font-size: 11px; font-weight: 700;
+    background: var(--accent-soft); color: var(--accent); border-radius: 6px; padding: 2px 7px; }
+  .fare .delta.up { background: var(--warn-soft); color: var(--warn); }
+  .fare .delta.zero { background: #eef0f4; color: var(--muted); }
+  .fare.plan { border-style: dashed; }
+
+  .error { margin-top: 16px; color: #b91c1c; background: #fef2f2; border: 1px solid #fecaca;
+    border-radius: 9px; padding: 10px 14px; font-size: 13px; display: none; }
+
+  footer { margin-top: 26px; color: var(--muted); font-size: 12px; line-height: 1.8; }
+  footer .foot-top { display: flex; justify-content: flex-end; margin-bottom: 6px; }
+  footer .check { cursor: pointer; text-decoration: underline; }
+  footer .check.ok { color: var(--accent); }
+  footer .check.bad { color: #b91c1c; }
+  @media (max-width: 560px) { .go-btn { width: 100%; margin-top: 10px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>🚇 上海地铁票价查询</h1>
+    <p>输入起点站与终点站，查询最短路径、里程，以及 <b>现行票价</b>（2005 机制）与 <b>调价听证方案一、方案二</b> 的票价对比。<br>
+       调价方案为 2026-09-07 听证稿（尚未实施）；磁浮线、市域机场线、金山铁路不计入。</p>
+  </header>
+
+  <div class="card query-card">
+    <div class="query-row">
+      <div class="field" id="f-origin">
+        <label>起点站</label>
+        <input id="in-origin" placeholder="如：人民广场、浦东机场" autocomplete="off">
+        <div class="dropdown" id="dd-origin"></div>
+      </div>
+      <button class="swap-btn" id="btn-swap" title="交换起点终点">⇄</button>
+      <div class="field" id="f-dest">
+        <label>终点站</label>
+        <input id="in-dest" placeholder="如：陆家嘴、西岑" autocomplete="off">
+        <div class="dropdown" id="dd-dest"></div>
+      </div>
+      <button class="go-btn" id="btn-go">查询票价</button>
+    </div>
+  </div>
+
+  <div class="error" id="error"></div>
+
+  <div class="card result-card" id="result">
+    <div class="summary" id="summary"></div>
+    <div class="route-block" id="block-main">
+      <div class="route-head" id="head-main"></div>
+      <div class="route" id="route-main"></div>
+      <div class="legs" id="legs-main"></div>
+    </div>
+    <div class="route-block alt" id="block-alt">
+      <div class="route-head" id="head-alt"></div>
+      <div class="route" id="route-alt"></div>
+      <div class="legs" id="legs-alt"></div>
+    </div>
+    <div class="route-note" id="route-note"></div>
+    <div class="fares" id="fares"></div>
+  </div>
+
+  <footer>
+    <div class="foot-top"><span class="check" id="selftest">运行官方示例自检</span></div>
+    <p>数据来源：高德地铁（2026-08 抓取，19 条常规线，415 站）；距离为相邻站直线距离 ×1.03 估算，里程边界附近票价可能有 ±1 元误差。</p>
+  </footer>
+</div>
+
+<script>
+/* ==================== 数据（由 build_web.py 内嵌） ==================== */
+const STATIONS = /*__STATIONS__*/;
+const EDGES = /*__EDGES__*/;
+const FACTOR = 1.03;
+
+const SCHEMES = {
+  current: { label: "现行票价", note: "3 元起 / 6 km，之后每 10 km +1 元", base: 3, baseKm: 6, bands: [10] },
+  plan1:   { label: "方案一",   note: "3 元起 / 4 km，4/4/4/7/7/7/10/10/10 km，67 km 后每 15 km +1", base: 3, baseKm: 4, bands: [4,4,4,7,7,7,10,10,10,15] },
+  plan2:   { label: "方案二",   note: "4 元起 / 6 km，6/8/8/10/10/12/12 km，72 km 后每 14 km +1", base: 4, baseKm: 6, bands: [6,8,8,10,10,12,12,14] },
+};
+
+const LINE_COLORS = {
+  "1号线": "#E4002B", "2号线": "#6EBE49", "3号线": "#FCD000", "4号线": "#AD5C9F",
+  "5号线": "#A54B94", "6号线": "#D20071", "7号线": "#ED6E00", "8号线": "#0095C9",
+  "9号线": "#8CC63F", "10号线": "#B5A5D5", "11号线": "#6E2C91", "12号线": "#008B6D",
+  "13号线": "#EE9394", "14号线": "#A6824D", "15号线": "#8A8D8F", "16号线": "#78C6DE",
+  "17号线": "#9E7BB5", "18号线": "#C8A900", "浦江线": "#8F9CA8",
+};
+const ALIASES = { "浦东机场": "浦东1号2号航站楼", "虹桥机场": "虹桥2号航站楼" };
+
+/* ==================== 核心逻辑（与 metro_fare.py 保持同构） ==================== */
+const GRAPH = {};
+for (const [a, b, km] of EDGES) {
+  const w = km * FACTOR;
+  (GRAPH[a] ??= {})[b] = w;
+  (GRAPH[b] ??= {})[a] = w;
+}
+
+function normalize(name) {
+  return name.replace(/ /g, "").replace(/　/g, "").replace(/站$/, "");
+}
+function shortName(name) {
+  const i = name.lastIndexOf("(");
+  return name.endsWith(")") && i >= 0 ? name.slice(0, i) : name;
+}
+function findMatches(query) {
+  const q = normalize(query);
+  if (!q) return [];
+  const alias = ALIASES[q];
+  if (alias && alias in STATIONS) return [alias];
+  if (q in STATIONS) return [q];
+  const hits = Object.keys(STATIONS).filter(n => {
+    const nq = normalize(n);
+    return nq.includes(q) || q.includes(nq);
+  });
+  return hits.sort((x, y) => x.length - y.length);
+}
+function dijkstra(start, end) {
+  const dist = { [start]: 0 }, prev = {};
+  let queue = [[0, start]];
+  while (queue.length) {
+    queue.sort((a, b) => a[0] - b[0]);
+    const [d, node] = queue.shift();
+    if (node === end) break;
+    if (d > (dist[node] ?? Infinity)) continue;
+    for (const nxt in GRAPH[node]) {
+      const nd = d + GRAPH[node][nxt];
+      if (nd < (dist[nxt] ?? Infinity)) {
+        dist[nxt] = nd;
+        prev[nxt] = node;
+        queue.push([nd, nxt]);
+      }
+    }
+  }
+  if (!(end in dist)) return null;
+  const path = [end];
+  while (path[path.length - 1] !== start) path.push(prev[path[path.length - 1]]);
+  return { distance: dist[end], path: path.reverse() };
+}
+function fareFor(d, scheme) {
+  const bounds = [scheme.baseKm];
+  while (bounds[bounds.length - 1] < d) {
+    const i = Math.min(bounds.length - 1, scheme.bands.length - 1);
+    bounds.push(bounds[bounds.length - 1] + scheme.bands[i]);
+  }
+  let price = scheme.base;
+  for (const b of bounds) if (b < d) price++;
+  return price;
+}
+function pathEdgeLines(path) {
+  return path.slice(0, -1).map((name, i) => {
+    const s = STATIONS[path[i + 1]];
+    return STATIONS[name].lines.filter(l => s.lines.includes(l));
+  });
+}
+function lineFor(shared, prev, nxt) {
+  for (const cand of [prev, nxt]) if (cand && shared.includes(cand)) return cand;
+  return shared[0];
+}
+
+/* 最少换乘路径：状态 (站, 线路) 的 Dijkstra，同线乘车按里程计费，
+   站内换乘计 TRANSFER_WEIGHT（1000 km，远大于任何里程），
+   换乘次数相同则取距离更短者。返回 {distance, transfers, path}。 */
+const TRANSFER_WEIGHT = 1000;
+
+function fewestTransfers(start, end) {
+  const dist = {}, prev = {};
+  const queue = [];
+  for (const ln of STATIONS[start].lines) {
+    dist[start + "|" + ln] = 0;
+    queue.push([0, start, ln]);
+  }
+  let endState = null;
+  while (queue.length) {
+    queue.sort((a, b) => a[0] - b[0]);
+    const [cost, node, line] = queue.shift();
+    if (cost > (dist[node + "|" + line] ?? Infinity) + 1e-9) continue;
+    if (node === end) { endState = node + "|" + line; break; }  // 已确定最优
+    for (const nxt in GRAPH[node]) {
+      if (!STATIONS[nxt].lines.includes(line)) continue;  // 同线乘车
+      const state = nxt + "|" + line, nc = cost + GRAPH[node][nxt];
+      if (nc < (dist[state] ?? Infinity)) {
+        dist[state] = nc; prev[state] = node + "|" + line;
+        queue.push([nc, nxt, line]);
+      }
+    }
+    for (const ln of STATIONS[node].lines) {  // 站内换乘
+      if (ln === line) continue;
+      const state = node + "|" + ln, nc = cost + TRANSFER_WEIGHT;
+      if (nc < (dist[state] ?? Infinity)) {
+        dist[state] = nc; prev[state] = node + "|" + line;
+        queue.push([nc, node, ln]);
+      }
+    }
+  }
+  if (!endState) return null;
+  const endCost = dist[endState];
+  const chain = [endState];
+  while (chain[chain.length - 1] in prev) chain.push(prev[chain[chain.length - 1]]);
+  const path = chain.reverse().map(s => s.split("|")[0]);
+  const dedup = [path[0]];
+  for (const s of path.slice(1)) if (s !== dedup[dedup.length - 1]) dedup.push(s);
+  let km = 0;
+  for (let i = 0; i < dedup.length - 1; i++) km += GRAPH[dedup[i]][dedup[i + 1]];
+  return { distance: km, transfers: Math.round(endCost / TRANSFER_WEIGHT), path: dedup };
+}
+function buildLegs(path) {
+  const lines = pathEdgeLines(path);
+  const legs = [];
+  let cur = null, segStart = path[0], segKm = 0;
+  for (let i = 0; i < path.length - 1; i++) {
+    const nxt = i + 1 < lines.length ? lines[i + 1][0] : lines[i][0];
+    const line = lineFor(lines[i], cur, nxt);
+    if (cur !== null && line !== cur) {
+      legs.push({ line: cur, from: segStart, to: path[i], km: segKm });
+      segStart = path[i]; segKm = 0;
+    }
+    cur = line;
+    segKm += GRAPH[path[i]][path[i + 1]];
+  }
+  legs.push({ line: cur, from: segStart, to: path[path.length - 1], km: segKm });
+  return legs;
+}
+
+function queryPlan(start, end) {
+  const r = dijkstra(start, end);
+  if (!r) return null;
+  const legs = buildLegs(r.path);
+  return { distance: r.distance, path: r.path, legs, transfers: legs.length - 1,
+           fares: Object.fromEntries(Object.entries(SCHEMES).map(([k, s]) => [k, fareFor(r.distance, s)])) };
+}
+
+/* ==================== UI ==================== */
+const $ = id => document.getElementById(id);
+const inOrigin = $("in-origin"), inDest = $("in-dest");
+const ddOrigin = $("dd-origin"), ddDest = $("dd-dest");
+
+function attachAutocomplete(input, dropdown) {
+  let items = [], active = -1;
+  function close() { dropdown.classList.remove("open"); items = []; active = -1; }
+  function render() {
+    const q = input.value;
+    const hits = findMatches(q).slice(0, 8);
+    if (!q || !hits.length) { close(); return; }
+    items = hits;
+    dropdown.innerHTML = hits.map((n, i) =>
+      `<div class="item${i === active ? " active" : ""}">
+         ${escapeHtml(shortName(n))}
+         <span class="lines">${STATIONS[n].lines.join("/")}</span>
+       </div>`).join("") || `<div class="empty">无匹配站点</div>`;
+    dropdown.classList.add("open");
+    dropdown.querySelectorAll(".item").forEach((el, i) =>
+      el.addEventListener("mousedown", e => { e.preventDefault(); input.value = items[i]; close(); }));
+  }
+  input.addEventListener("input", () => { active = -1; render(); });
+  input.addEventListener("keydown", e => {
+    if (!dropdown.classList.contains("open")) return;
+    if (e.key === "ArrowDown") { e.preventDefault(); active = (active + 1) % items.length; render(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); active = (active - 1 + items.length) % items.length; render(); }
+    else if (e.key === "Enter" && active >= 0) { e.preventDefault(); input.value = items[active]; close(); query(); }
+    else if (e.key === "Escape") close();
+  });
+  input.addEventListener("blur", () => setTimeout(close, 120));
+}
+function escapeHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function resolveInput(input, field) {
+  const hits = findMatches(input.value);
+  if (!hits.length) return null;
+  if (hits.length > 1) {
+    field.querySelector(".dropdown").classList.remove("open");
+    return null;
+  }
+  return hits[0];
+}
+function showError(msg) { const el = $("error"); el.textContent = msg; el.style.display = "block"; }
+function hideError() { $("error").style.display = "none"; }
+
+function renderRoute(routeEl, legsEl, r) {
+  const lines = pathEdgeLines(r.path);
+  const legs = r.legs ?? buildLegs(r.path);
+  let html = "";
+  for (let i = 0; i < r.path.length; i++) {
+    const name = r.path[i];
+    if (i === r.path.length - 1) { html += `<span class="arr">${escapeHtml(shortName(name))}</span>`; break; }
+    const ln = lineFor(lines[i], null, i + 1 < lines.length ? lines[i + 1][0] : null);
+    const color = LINE_COLORS[ln] || "#999";
+    const prevLn = i > 0 ? lineFor(lines[i - 1], null, lines[i][0]) : null;
+    html += `<span class="st"><span class="dot" style="background:${color}"></span>${escapeHtml(shortName(name))}</span>`;
+    if (i > 0 && prevLn !== ln) html += `<span class="xf">换乘 ${ln}</span>`;
+    html += `<span class="run"><span class="bar" style="background:${color}"></span><span class="ln">${ln}</span></span>`;
+  }
+  routeEl.innerHTML = html;
+  legsEl.innerHTML = legs.map(l =>
+    `<div class="leg">
+       <span class="tag" style="background:${LINE_COLORS[l.line] || "#999"}">${l.line}</span>
+       <b>${escapeHtml(shortName(l.from))}</b> → <b>${escapeHtml(shortName(l.to))}</b>
+       <span class="km">约 ${l.km.toFixed(1)} km</span>
+     </div>`).join("");
+}
+
+function query() {
+  hideError();
+  const start = resolveInput(inOrigin, $("f-origin"));
+  const end = resolveInput(inDest, $("f-dest"));
+  if (!start || !end) { showError("无法确定站点：请输入更完整的站名（支持 浦东机场 等别名）"); return; }
+  if (start === end) { showError("起点和终点相同，试试不同的两站"); return; }
+  const r = queryPlan(start, end);          // 最短距离路径（票价计费依据）
+  const r2 = fewestTransfers(start, end);   // 最少换乘路径（推荐）
+  if (!r || !r2) { showError("这两站之间没有路径"); return; }
+
+  const same = r2.path.join("|") === r.path.join("|");
+  const main = same ? r : r2;
+
+  $("summary").innerHTML =
+    `<span>共 <b>${main.path.length}</b> 站</span>
+     <span>约 <b>${main.distance.toFixed(1)}</b> km</span>
+     <span>换乘 <b>${main.transfers}</b> 次</span>`;
+
+  $("head-main").innerHTML = same ? "路线" : "少换乘路线（推荐）";
+  renderRoute($("route-main"), $("legs-main"), main);
+
+  if (same) {
+    $("block-alt").style.display = "none";
+    $("route-note").style.display = "none";
+  } else {
+    $("block-alt").style.display = "block";
+    $("head-alt").textContent = "最短路径（计费依据）";
+    renderRoute($("route-alt"), $("legs-alt"), r);
+    $("route-note").style.display = "block";
+    $("route-note").textContent =
+      `票价按全网最短路径里程计价（约 ${r.distance.toFixed(1)} km），两条路线票价相同；想少换乘直接走推荐路线即可。`;
+  }
+
+  // fares
+  const cur = r.fares.current;
+  $("fares").innerHTML = Object.entries(SCHEMES).map(([k, s]) => {
+    const p = r.fares[k];
+    const delta = p - cur;
+    const d = delta > 0 ? `<span class="delta up">+${delta} 元</span>`
+            : delta < 0 ? `<span class="delta zero">-${-delta} 元</span>`
+            : `<span class="delta zero">不变</span>`;
+    const cls = k === "current" ? "fare current" : "fare plan";
+    const tag = k === "current" ? "" : (k === "plan1" ? "调价后" : "");
+    return `<div class="${cls}">
+      <span class="name">${tag} ${s.label}</span>
+      <div class="note">${s.note}</div>
+      <div class="price">${p}<small> 元</small></div>${d}
+    </div>`;
+  }).join("");
+
+  $("result").classList.add("show");
+}
+
+$("btn-go").addEventListener("click", query);
+$("btn-swap").addEventListener("click", () => { const t = inOrigin.value; inOrigin.value = inDest.value; inDest.value = t; });
+[inOrigin, inDest].forEach(inp => inp.addEventListener("keydown", e => { if (e.key === "Enter") query(); }));
+attachAutocomplete(inOrigin, ddOrigin);
+attachAutocomplete(inDest, ddDest);
+
+/* 官方示例自检 */
+$("selftest").addEventListener("click", () => {
+  const cases = [["人民广场", "陆家嘴", 3, 3, 4], ["虹桥火车站", "南京东路", 5, 7, 6], ["西岑", "滴水湖", 15, 16, 15]];
+  let ok = true;
+  for (const [a, b, c, p1, p2] of cases) {
+    const r = queryPlan(a, b);
+    const got = r && [r.fares.current, r.fares.plan1, r.fares.plan2];
+    if (!got || got[0] !== c || got[1] !== p1 || got[2] !== p2) { ok = false; break; }
+  }
+  const el = $("selftest");
+  el.textContent = ok ? "✓ 自检通过：官方 3 组示例票价全部一致" : "✗ 自检失败：示例票价不一致";
+  el.className = "check " + (ok ? "ok" : "bad");
+});
+</script>
+</body>
+</html>
