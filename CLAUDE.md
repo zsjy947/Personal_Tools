@@ -19,6 +19,7 @@
 - 原 `demo.py`，支持 5 种图像混淆/解混淆模式，每种模式均提供双向处理。
 - 使用 Numba JIT 加速像素变换，基于 MD5 生成伪随机排列。
 - 独立入口：`python -m file_tools.image_decrypt INPUT OUTPUT --operation {encrypt,decrypt} --mode MODE --key KEY`。
+- 输入为目录时批量处理，支持 `--suffix`、`--recursive` 和 `--overwrite`，并保留相对目录结构。
 - 依赖 `numpy`、`Pillow`、`numba`。
 
 ### `file_tools/media_to_mp4.py`

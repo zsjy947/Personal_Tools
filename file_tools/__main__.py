@@ -4,7 +4,11 @@ from pathlib import Path
 
 from .delete_copy_files import delete_copy_files
 from .dot1_suffix import rename_dot1_files
-from .image_decrypt import process_image
+from .image_decrypt import (
+    normalize_suffixes as normalize_image_suffixes,
+    process_image,
+    process_image_directory,
+)
 from .media_to_mp4 import convert_media, normalize_suffixes
 
 
@@ -37,7 +41,10 @@ def run_image_decrypt() -> None:
 
     print("\n模式: 1 方块 / 2 行像素 / 3 像素 / 4 PicEncrypt 行 / 5 PicEncrypt 行+列")
     input_path = Path(ask_value("输入图片路径").strip('"'))
-    output_path = Path(ask_value("输出图片路径（包含扩展名）").strip('"'))
+    is_directory = input_path.is_dir()
+    output_path = Path(
+        ask_value("输出目录" if is_directory else "输出图片路径（包含扩展名）").strip('"')
+    )
 
     while True:
         mode = ask_value("解密模式")
@@ -58,7 +65,21 @@ def run_image_decrypt() -> None:
             break
         print("错误: 模式 4 和 5 的密钥必须大于 0 且小于 1。")
 
-    process_image(operation, mode, input_path, key, output_path)
+    if is_directory:
+        suffix_value = input("筛选后缀（留空处理常见图片格式，多个用空格或逗号分隔）: ")
+        suffixes = normalize_image_suffixes([suffix_value.replace(" ", ",")])
+        process_image_directory(
+            operation,
+            mode,
+            input_path,
+            key,
+            output_path,
+            suffixes=suffixes,
+            recursive=ask_yes_no("递归处理子目录"),
+            overwrite=ask_yes_no("覆盖已有输出文件"),
+        )
+    else:
+        process_image(operation, mode, input_path, key, output_path)
 
 
 def run_media_to_mp4() -> None:

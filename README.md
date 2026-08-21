@@ -27,11 +27,20 @@ python -m file_tools
 ```powershell
 python -m file_tools.image_decrypt INPUT OUTPUT --operation encrypt --mode 1 --key KEY
 python -m file_tools.image_decrypt INPUT OUTPUT --operation decrypt --mode 1 --key KEY
+
+# 批量处理目录，保留子目录结构
+python -m file_tools.image_decrypt INPUT_DIR OUTPUT_DIR --operation encrypt --mode 1 --key KEY --recursive
+
+# 只处理指定后缀
+python -m file_tools.image_decrypt INPUT_DIR OUTPUT_DIR --operation decrypt --mode 1 --key KEY --suffix png webp
 ```
 
 - 模式 1 至 3 的密钥为字符串。
 - 模式 4 至 5 的密钥为大于 0 且小于 1 的数字。
+- 模式 1 使用 `32 × 32` 方块网格，图片宽度和高度都必须能被 32 整除。
 - `--operation encrypt` 执行混淆，`--operation decrypt` 执行解混淆；默认解混淆。
+- 输入为目录时自动启用批量模式，默认处理常见图片格式；支持 `--suffix`、`--recursive` 和 `--overwrite`。
+- 批量输出会保留输入目录中的相对目录结构，默认跳过已有文件。
 - 依赖 `numpy`、`Pillow` 和 `numba`。
 
 ### 伪装媒体文件转 MP4
