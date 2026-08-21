@@ -1,84 +1,132 @@
-# 个人 Python 脚本工具集
+# 个人 Python 工具集
 
-个人日常使用的 Python 小工具集合：图像解密、视频转换、文件批量操作、图片下载、地铁票价查询等。每个 `.py` 文件相互独立，可单独运行。
+项目由三个相互独立的部分组成：本地文件处理工具集、图片下载 CLI 和上海地铁票价查询。
 
-## 工具一览
+## 文件处理工具集
 
-| 工具 | 功能 | 用法 |
-|---|---|---|
-| `demo.py` | 图像解混淆/解密（5 种模式） | `python demo.py`（交互式） |
-| `ts2mp4.py` | TS 视频转 MP4 | `python ts2mp4.py`（需设置 `TS_FOLDER`） |
-| `modify.py` | 批量添加/移除 `.1` 后缀（单层目录） | `python modify.py`（需修改 `target_folder`） |
-| `remove_dot1_suffix.py` | 递归移除 `.1` 后缀 | `python remove_dot1_suffix.py <目录> [--dry-run]` |
-| `delete_copy_files.py` | 递归删除"副本"文件 | `python delete_copy_files.py <目录> [--dry-run]` |
-| `download_images.py` | 批量下载图片 | `python download_images.py [-i url.csv] [-o 输出目录]` |
-| `shanghai_metro_fare/` | 上海地铁最短路径与票价 | 详见 [shanghai_metro_fare/README.md](shanghai_metro_fare/README.md) |
+`file_tools/` 集中存放本地文件处理脚本，推荐通过统一交互入口启动：
 
-## 各工具说明
+```powershell
+python -m file_tools
+```
 
-### demo.py — 图像解混淆/解密
-- 支持 5 种解混淆模式：方块混淆、行像素混淆、像素混淆、PicEncrypt 行模式、PicEncrypt 行+列模式
-- 使用 Numba JIT 加速像素级图像变换，基于 MD5 哈希生成伪随机排列序列
-- 交互式 CLI：输入图片路径、密钥（0-1 浮点数）、输出路径、解密模式
-- 依赖：`numpy`、`Pillow`、`numba`
+菜单提供以下功能：
 
-### ts2mp4.py — TS 视频转 MP4
-- 调用 ffmpeg 将 .ts 文件转换为 .mp4（`-c copy` 无损封装转换）
-- `ts_to_mp4()`：单个文件转换；`batch_ts_to_mp4()`：批量转换文件夹内所有 .ts 文件
-- 依赖：系统需安装 ffmpeg 并在 PATH 中
-- 需在 `__main__` 中设置 `TS_FOLDER` 路径（当前为占位符）
+1. 图像混淆/解混淆
+2. 伪装媒体文件转 MP4
+3. 添加 `.1` 后缀
+4. 移除 `.1` 后缀
+5. 删除文件名以“副本”结尾的文件
 
-### modify.py — 文件批量重命名（单层目录）
-- `add_dot1_to_files()`：对指定文件夹内所有文件添加 `.1` 后缀（如 `foo.mp4` → `foo.mp4.1`）
-- `remove_dot1_from_files()`：移除该文件夹内所有 `.1` 结尾文件的后缀
-- **注意**：仅处理指定目录的直接文件，**不递归子文件夹**
-- 硬编码了目标路径 `target_folder`，使用前需修改
+每项工具也可以独立使用命令行参数运行。
 
-### remove_dot1_suffix.py — 递归移除 .1 后缀
-- 递归遍历目录及所有子文件夹，将 `.1` 结尾的文件重命名为去掉 `.1` 的名称
-- 支持 `--dry-run` 预览模式，目标文件已存在时自动跳过
+### 图像混淆/解混淆
 
-### delete_copy_files.py — 递归删除"副本"文件
-- 递归遍历目录及所有子文件夹，删除文件名（不含后缀）以"副本"结尾的文件
-- 不限制具体后缀，如 `文档副本.txt`、`data 副本.log` 均会被匹配
-- 支持 `--dry-run` 预览模式
+支持方块混淆、行像素混淆、像素混淆以及两种 PicEncrypt 模式，每种模式均可双向处理：
 
-### download_images.py — 批量下载图片
-- 读取 CSV 中的图片 URL 列表，批量下载到指定文件夹
-- 自动跳过已存在的文件，下载失败时打印错误并继续
-- `-i/--input` 指定 CSV 路径（默认脚本同目录下的 `url.csv`），`-o/--output` 指定输出目录（默认 `downloaded_images/`）
-- 依赖：`requests`
+```powershell
+python -m file_tools.image_decrypt INPUT OUTPUT --operation encrypt --mode 1 --key KEY
+python -m file_tools.image_decrypt INPUT OUTPUT --operation decrypt --mode 1 --key KEY
+```
 
-### shanghai_metro_fare/ — 上海地铁最短路径与票价查询
-- 输入起点站和终点站，输出最短路径、里程，以及现行 / 听证方案一 / 听证方案二三套票价
-- 命令行版 `metro_fare.py` + 自包含网页版 `index.html`（数据内嵌，双击即用）
-- 纯标准库实现，详见 [shanghai_metro_fare/README.md](shanghai_metro_fare/README.md)
+- 模式 1 至 3 的密钥为字符串。
+- 模式 4 至 5 的密钥为大于 0 且小于 1 的数字。
+- `--operation encrypt` 执行混淆，`--operation decrypt` 执行解混淆；默认解混淆。
+- 依赖 `numpy`、`Pillow` 和 `numba`。
+
+### 伪装媒体文件转 MP4
+
+处理真实内容为视频、但扩展名可能是 `.jpeg`、`.woff2`、`.ts` 等任意后缀的文件。工具由 ffmpeg 探测真实内容，并使用 `-c copy` 无损封装为 MP4；普通图片、字体等非视频文件无法转换。
+
+```powershell
+# 单个文件
+python -m file_tools.media_to_mp4 INPUT
+
+# 按后缀批量处理目录
+python -m file_tools.media_to_mp4 TARGET --suffix jpeg woff2 ts
+
+# 递归预览
+python -m file_tools.media_to_mp4 TARGET --suffix jpeg,wOFF2,ts --recursive --dry-run
+```
+
+可选参数包括 `--output-dir`、`--overwrite`、`--recursive` 和 `--dry-run`。实际转换需要安装 [ffmpeg](https://ffmpeg.org/) 并将其加入 `PATH`。
+
+### `.1` 后缀管理
+
+```powershell
+python -m file_tools.dot1_suffix add TARGET
+python -m file_tools.dot1_suffix remove TARGET --recursive --dry-run
+```
+
+- 默认只处理目标目录的直接文件。
+- `--recursive` 递归处理子目录。
+- `--dry-run` 只预览，不重命名。
+- 添加时跳过已经以 `.1` 结尾的文件，目标名称冲突时也会跳过。
+
+### 删除“副本”文件
+
+递归匹配文件名（不含扩展名）以“副本”结尾的文件。默认仅预览，必须使用 `--execute` 才会实际删除：
+
+```powershell
+python -m file_tools.delete_copy_files TARGET
+python -m file_tools.delete_copy_files TARGET --execute
+```
+
+## 图片下载 CLI
+
+`download_images.py` 是独立工具，不属于 `file_tools` 菜单。CSV 每行第一列应为一个图片 URL：
+
+```powershell
+python download_images.py --input URLS.csv --output OUTPUT_DIR
+```
+
+短参数和其他选项：
+
+```powershell
+python download_images.py -i URLS.csv -o downloaded_images --timeout 30 --delay 0.5
+```
+
+- `--input` 为必需参数。
+- `--output` 默认是当前目录下的 `downloaded_images/`。
+- 已存在文件会被跳过。
+- 下载采用流式写入，单个 URL 失败不会中断其余任务。
+- 依赖 `requests`。
+
+## 上海地铁票价
+
+`shanghai_metro_fare/` 是独立工具，提供命令行版和自包含网页版：
+
+```powershell
+python shanghai_metro_fare/metro_fare.py
+python shanghai_metro_fare/metro_fare.py 人民广场 陆家嘴
+python shanghai_metro_fare/metro_fare.py --selftest
+```
+
+网页版可直接打开 `shanghai_metro_fare/index.html`。详细说明见 [shanghai_metro_fare/README.md](shanghai_metro_fare/README.md)。
 
 ## 环境要求
 
-- Python 3.10+（虚拟环境位于 `.venv/`）
-- 安装依赖：`pip install -r requirements.txt`（numpy、numba、Pillow、requests）
-- `ts2mp4.py` 需要系统安装 [ffmpeg](https://ffmpeg.org/) 并加入 PATH
-- `shanghai_metro_fare/` 纯标准库实现，无需第三方依赖
+- Python 3.10+
+- Python 依赖：`pip install -r requirements.txt`
+- 媒体转 MP4 功能额外需要系统安装 ffmpeg
+- 上海地铁工具只使用 Python 标准库
 
 ## 目录结构
 
-```
+```text
 .
-├── demo.py                  # 图像解混淆/解密
-├── ts2mp4.py                # TS 视频转 MP4
-├── modify.py                # 批量重命名（.1 后缀，单层）
-├── remove_dot1_suffix.py    # 递归移除 .1 后缀
-├── delete_copy_files.py     # 递归删除"副本"文件
-├── download_images.py       # 批量下载图片
-├── shanghai_metro_fare/     # 上海地铁票价（CLI + 网页版）
+├── file_tools/
+│   ├── __init__.py
+│   ├── __main__.py
+│   ├── image_decrypt.py
+│   ├── media_to_mp4.py
+│   ├── dot1_suffix.py
+│   └── delete_copy_files.py
+├── download_images.py
+├── shanghai_metro_fare/
 ├── requirements.txt
-├── CLAUDE.md                # Claude Code 项目指引
+├── CLAUDE.md
 └── README.md
 ```
 
-## 注意事项
-
-- 各工具相互独立，无公共依赖，每个 `.py` 文件可单独运行
-- 部分工具（`modify.py`、`ts2mp4.py`）含占位路径，使用前请先修改
-- 删除类操作（`delete_copy_files.py`）建议先用 `--dry-run` 预览
+所有用户文件路径均通过命令行参数或交互菜单传入，不需要修改脚本源码。

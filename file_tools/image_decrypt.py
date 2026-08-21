@@ -1,6 +1,6 @@
-"""图像解混淆/解密工具。
+"""图像混淆与解混淆工具。
 
-支持 5 种解混淆模式：
+支持 5 种双向处理模式：
     1. 方块混淆
     2. 行像素混淆
     3. 像素混淆
@@ -8,8 +8,11 @@
     5. 兼容 PicEncrypt: 行+列模式
 """
 
+import argparse
 import hashlib
-import time
+import sys
+from pathlib import Path
+from time import perf_counter
 
 import numpy as np
 from numba import jit
@@ -156,14 +159,14 @@ def decrypt_b2(img_li, key):
 
 def decrypt_c2(img_li, key):
     """2. 行像素混淆解密。"""
-    wid, hit, z = img_li.shape
+    hit, wid, z = img_li.shape
     xl = amess(wid, key)
     return get_img_2(img_li, xl)
 
 
 def decrypt_c(img_li, key):
     """3. 像素混淆解密。"""
-    wid, hit, z = img_li.shape
+    hit, wid, z = img_li.shape
     xl = amess(wid, key)
     yl = amess(hit, key)
     return get_img_3(img_li, xl, yl)
@@ -183,60 +186,137 @@ def decrypt_pe2(img_li, key):
     return get_img_5(img_li, key)
 
 
+def decrypt_array(mode: str, img_li: np.ndarray, key: str | float) -> np.ndarray:
+    """使用现有算法将像素数组解混淆。"""
+    if mode == "1":
+        return decrypt_b2(img_li, key)
+    if mode == "2":
+        return decrypt_c2(img_li, key)
+    if mode == "3":
+        return decrypt_c(img_li, key)
+    if mode == "4":
+        return decrypt_pe1(img_li, key)
+    if mode == "5":
+        return decrypt_pe2(img_li, key)
+    raise ValueError(f"无效的处理模式: {mode}")
+
+
+def encrypt_array(mode: str, img_li: np.ndarray, key: str | float) -> np.ndarray:
+    """应用解混淆像素排列的逆映射，生成可还原的混淆图片。"""
+    height, width, _ = img_li.shape
+    pixel_ids = np.arange(height * width, dtype=np.float64).reshape(height, width)
+    index_image = np.repeat(pixel_ids[:, :, np.newaxis], 4, axis=2)
+    decrypted_ids = decrypt_array(mode, index_image, key)
+    source_indices = decrypted_ids[:, :, 0].astype(np.int64).ravel()
+
+    encrypted = np.empty_like(img_li)
+    encrypted.reshape(-1, 4)[source_indices] = img_li.reshape(-1, 4)
+    return encrypted
+
+
 # -------- 主函数 --------
 
-def main(mode: str, path: str, key: str, out: str) -> None:
-    """解混淆主函数。
+def process_image(
+    operation: str,
+    mode: str,
+    input_path: str | Path,
+    key: str,
+    output_path: str | Path,
+) -> None:
+    """混淆或解混淆图片。
 
     Args:
+        operation: `encrypt` 为混淆，`decrypt` 为解混淆
         mode: 解密模式 '1'~'5'
-        path: 输入图片路径
+        input_path: 输入图片路径
         key: 密钥（模式 1-3 为字符串，模式 4-5 为 0-1 浮点数）
-        out: 输出图片路径
+        output_path: 输出图片路径
     """
-    img = Image.open(path)
+    if operation not in {"encrypt", "decrypt"}:
+        raise ValueError(f"无效的操作: {operation}")
+    if mode not in {"1", "2", "3", "4", "5"}:
+        raise ValueError(f"无效的处理模式: {mode}")
 
-    if img.mode != 'RGBA':
-        img = img.convert('RGBA')
-    img_li = np.array(img)
+    input_path = Path(input_path)
+    output_path = Path(output_path)
+    if not input_path.is_file():
+        raise FileNotFoundError(f"输入图片不存在: {input_path}")
+    if not output_path.parent.is_dir():
+        raise FileNotFoundError(f"输出目录不存在: {output_path.parent}")
 
-    if mode == '1':
-        new_img = decrypt_b2(img_li, key)
-    elif mode == '2':
-        new_img = decrypt_c2(img_li, key)
-    elif mode == '3':
-        new_img = decrypt_c(img_li, key)
-    elif mode == '4':
-        key = float(key)
-        new_img = decrypt_pe1(img_li, key)
-    elif mode == '5':
-        key = float(key)
-        new_img = decrypt_pe2(img_li, key)
+    numeric_key = None
+    if mode in {"4", "5"}:
+        try:
+            numeric_key = float(key)
+        except ValueError as exc:
+            raise ValueError("模式 4 和 5 的密钥必须是 0 到 1 之间的数字") from exc
+        if not 0 < numeric_key < 1:
+            raise ValueError("模式 4 和 5 的密钥必须大于 0 且小于 1")
+
+    with Image.open(input_path) as img:
+        if img.mode != "RGBA":
+            img = img.convert("RGBA")
+        img_li = np.array(img)
+
+    algorithm_key = numeric_key if numeric_key is not None else key
+    if operation == "encrypt":
+        new_img = encrypt_array(mode, img_li, algorithm_key)
     else:
-        raise ValueError(f"无效的解密模式: {mode}")
+        new_img = decrypt_array(mode, img_li, algorithm_key)
 
-    img = Image.fromarray(np.uint8(new_img))
-    img.save(out)
-    print(f'文件 {out} 已存入。')
+    img = Image.fromarray(np.uint8(new_img), mode="RGBA")
+    if output_path.suffix.lower() in {".jpg", ".jpeg"}:
+        img = img.convert("RGB")
+    img.save(output_path)
+    print(f"文件已保存: {output_path}")
 
 
-if __name__ == '__main__':
-    image = input('Path：')
-    pword = input('Password(0-1)：')
-    save_path = input('Save to(不含后缀)：') + '.png'
-    mode = input(
-        '1. 方块混淆\n'
-        '2. 行像素混淆\n'
-        '3. 像素混淆\n'
-        '4. 兼容PicEncrypt: 行模式\n'
-        '5. 兼容PicEncrypt: 行+列模式\n'
-        '输入解混淆模式：'
+def decrypt_image(
+    mode: str,
+    input_path: str | Path,
+    key: str,
+    output_path: str | Path,
+) -> None:
+    """兼容调用入口：解混淆图片。"""
+    process_image("decrypt", mode, input_path, key, output_path)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="使用指定模式混淆或解混淆图片。")
+    parser.add_argument("input", type=Path, help="输入图片路径")
+    parser.add_argument("output", type=Path, help="输出图片路径，需包含扩展名")
+    parser.add_argument(
+        "--operation",
+        choices=("encrypt", "decrypt"),
+        default="decrypt",
+        help="处理方向：encrypt 混淆，decrypt 解混淆（默认）",
     )
-
-    start_time = time.time()
-    main(mode, image, pword, save_path)
-    input(
-        '\nDecryption Finished...\n'
-        'Time: {:.6f} second(s)\n'
-        'Press any key...'.format(time.time() - start_time)
+    parser.add_argument(
+        "--mode",
+        required=True,
+        choices=("1", "2", "3", "4", "5"),
+        help="解密模式：1 方块，2 行像素，3 像素，4 PicEncrypt 行，5 PicEncrypt 行+列",
     )
+    parser.add_argument(
+        "--key",
+        required=True,
+        help="密钥；模式 1-3 使用字符串，模式 4-5 使用 0 到 1 之间的数字",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    start_time = perf_counter()
+    try:
+        process_image(args.operation, args.mode, args.input, args.key, args.output)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        print(f"错误: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"耗时: {perf_counter() - start_time:.6f} 秒")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
