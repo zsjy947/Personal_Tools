@@ -11,12 +11,23 @@
 import argparse
 import hashlib
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
 
 import numpy as np
 from numba import jit
 from PIL import Image
+
+
+DEFAULT_IMAGE_SUFFIXES = {".bmp", ".gif", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
+
+
+@dataclass
+class BatchSummary:
+    processed: int = 0
+    skipped: int = 0
+    failed: int = 0
 
 
 # -------- 伪随机排列生成 --------
@@ -258,6 +269,10 @@ def process_image(
             img = img.convert("RGBA")
         img_li = np.array(img)
 
+    height, width, _ = img_li.shape
+    if mode == "1" and (width % 32 != 0 or height % 32 != 0):
+        raise ValueError("模式 1 要求图片宽度和高度都能被 32 整除")
+
     algorithm_key = numeric_key if numeric_key is not None else key
     if operation == "encrypt":
         new_img = encrypt_array(mode, img_li, algorithm_key)
@@ -269,6 +284,72 @@ def process_image(
         img = img.convert("RGB")
     img.save(output_path)
     print(f"文件已保存: {output_path}")
+
+
+def normalize_suffixes(values: list[str] | None) -> set[str]:
+    suffixes: set[str] = set()
+    for value in values or []:
+        for item in value.split(","):
+            item = item.strip().lower()
+            if item:
+                suffixes.add(item if item.startswith(".") else f".{item}")
+    return suffixes
+
+
+def process_image_directory(
+    operation: str,
+    mode: str,
+    input_dir: str | Path,
+    key: str,
+    output_dir: str | Path,
+    suffixes: set[str] | None = None,
+    recursive: bool = False,
+    overwrite: bool = False,
+) -> BatchSummary:
+    input_dir = Path(input_dir).expanduser()
+    output_dir = Path(output_dir).expanduser()
+    if not input_dir.is_dir():
+        raise NotADirectoryError(f"不是有效目录: {input_dir}")
+
+    selected_suffixes = suffixes or DEFAULT_IMAGE_SUFFIXES
+    resolved_input_dir = input_dir.resolve()
+    resolved_output_dir = output_dir.resolve()
+    if resolved_input_dir == resolved_output_dir:
+        raise ValueError("批量处理的输出目录不能与输入目录相同")
+    output_inside_input = resolved_input_dir in resolved_output_dir.parents
+    entries = input_dir.rglob("*") if recursive else input_dir.iterdir()
+    files = sorted(
+        path for path in entries
+        if path.is_file()
+        and path.suffix.lower() in selected_suffixes
+        and (not output_inside_input or resolved_output_dir not in path.resolve().parents)
+    )
+    summary = BatchSummary()
+    if not files:
+        print("没有找到符合条件的图片。")
+        return summary
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for input_path in files:
+        relative_path = input_path.relative_to(input_dir)
+        output_path = output_dir / relative_path
+        if output_path.exists() and not overwrite:
+            print(f"跳过，目标已存在: {output_path}")
+            summary.skipped += 1
+            continue
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            process_image(operation, mode, input_path, key, output_path)
+            summary.processed += 1
+        except (OSError, ValueError) as exc:
+            print(f"处理失败: {input_path} ({exc})", file=sys.stderr)
+            summary.failed += 1
+
+    print(
+        f"\n批量完成: 成功 {summary.processed}，跳过 {summary.skipped}，"
+        f"失败 {summary.failed}"
+    )
+    return summary
 
 
 def decrypt_image(
@@ -283,8 +364,8 @@ def decrypt_image(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="使用指定模式混淆或解混淆图片。")
-    parser.add_argument("input", type=Path, help="输入图片路径")
-    parser.add_argument("output", type=Path, help="输出图片路径，需包含扩展名")
+    parser.add_argument("input", type=Path, help="输入图片或目录")
+    parser.add_argument("output", type=Path, help="输出图片或目录")
     parser.add_argument(
         "--operation",
         choices=("encrypt", "decrypt"),
@@ -302,6 +383,14 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="密钥；模式 1-3 使用字符串，模式 4-5 使用 0 到 1 之间的数字",
     )
+    parser.add_argument(
+        "--suffix",
+        nargs="+",
+        metavar="EXT",
+        help="目录模式筛选后缀，默认处理常见图片格式",
+    )
+    parser.add_argument("--recursive", action="store_true", help="目录模式递归处理子目录")
+    parser.add_argument("--overwrite", action="store_true", help="目录模式覆盖已有输出文件")
     return parser
 
 
@@ -309,13 +398,27 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     start_time = perf_counter()
     try:
-        process_image(args.operation, args.mode, args.input, args.key, args.output)
-    except (FileNotFoundError, OSError, ValueError) as exc:
+        if args.input.is_dir():
+            summary = process_image_directory(
+                args.operation,
+                args.mode,
+                args.input,
+                args.key,
+                args.output,
+                suffixes=normalize_suffixes(args.suffix),
+                recursive=args.recursive,
+                overwrite=args.overwrite,
+            )
+            exit_code = 1 if summary.failed else 0
+        else:
+            process_image(args.operation, args.mode, args.input, args.key, args.output)
+            exit_code = 0
+    except (FileNotFoundError, NotADirectoryError, OSError, ValueError) as exc:
         print(f"错误: {exc}", file=sys.stderr)
         return 1
 
     print(f"耗时: {perf_counter() - start_time:.6f} 秒")
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":
