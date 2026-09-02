@@ -116,6 +116,13 @@ def run_delete_copy_files() -> None:
     delete_copy_files(path, execute=execute)
 
 
+def run_gui() -> None:
+    """启动可视化界面，关闭窗口后返回主菜单。"""
+    from .gui import main as gui_main
+
+    gui_main()
+
+
 def run_tool(action) -> None:
     while True:
         try:
@@ -138,6 +145,7 @@ def main() -> int:
         "3": lambda: run_dot1("add"),
         "4": lambda: run_dot1("remove"),
         "5": run_delete_copy_files,
+        "6": run_gui,
     }
     while True:
         print(
@@ -147,6 +155,7 @@ def main() -> int:
             "3. 添加 .1 后缀\n"
             "4. 移除 .1 后缀\n"
             "5. 删除文件名以‘副本’结尾的文件\n"
+            "6. 打开可视化界面\n"
             "0. 退出\n"
             "进入工具后，可随时输入 0 返回主菜单。"
         )

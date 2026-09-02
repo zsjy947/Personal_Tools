@@ -20,6 +20,16 @@ python -m file_tools
 
 每项工具也可以独立使用命令行参数运行。
 
+### 可视化界面
+
+双击项目根目录的 `file_tools_gui.pyw` 即可启动图形界面（无控制台窗口），也可以用命令启动，或在统一交互菜单中选择 `6. 打开可视化界面`：
+
+```powershell
+python -m file_tools.gui
+```
+
+界面提供与菜单一致的五项功能，所有输入、输出路径均通过资源管理器对话框选择，执行过程与结果汇总显示在窗口底部日志区。界面只依赖标准库 tkinter；各工具在执行时才加载自身依赖，缺少依赖时界面仍可打开，仅对应工具执行时报错。
+
 ### 图像混淆/解混淆
 
 支持方块混淆、行像素混淆、像素混淆以及两种 PicEncrypt 模式，每种模式均可双向处理：
@@ -127,10 +137,12 @@ python shanghai_metro_fare/metro_fare.py --selftest
 ├── file_tools/
 │   ├── __init__.py
 │   ├── __main__.py
+│   ├── gui.py
 │   ├── image_decrypt.py
 │   ├── media_to_mp4.py
 │   ├── dot1_suffix.py
 │   └── delete_copy_files.py
+├── file_tools_gui.pyw
 ├── download_images.py
 ├── shanghai_metro_fare/
 ├── requirements.txt
