@@ -6,7 +6,7 @@
 
 项目分为三个独立部分：
 
-1. `file_tools/`：本地文件处理工具包，统一入口为 `python -m file_tools`。
+1. `file_tools/`：本地文件处理工具包，统一入口为 `python -m file_tools`，另有 tkinter 可视化界面 `python -m file_tools.gui`（双击根目录 `file_tools_gui.pyw` 启动）。
 2. `download_images.py`：独立的批量图片下载 CLI。
 3. `shanghai_metro_fare/`：独立的上海地铁最短路径与票价工具。
 
@@ -41,6 +41,13 @@
 - 递归匹配文件名 stem 以“副本”结尾的文件。
 - 默认仅预览，必须传入 `--execute` 才删除。
 - 独立入口：`python -m file_tools.delete_copy_files TARGET [--execute]`。
+
+### `file_tools/gui.py`
+
+- tkinter 可视化界面，五个标签页对应上述五项工具，路径一律通过系统资源管理器对话框选择。
+- 顶层只依赖标准库；各工具模块在执行任务时才导入，缺少依赖时界面仍能打开。
+- 工具任务在后台线程执行，控件值只在主线程读取，print 输出经队列刷入窗口底部日志区。
+- 入口：`python -m file_tools.gui`、`file_tools_gui.pyw`（双击启动，优先使用 `.venv` 解释器）、交互菜单选项 6。
 
 ## 图片下载
 
