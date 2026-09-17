@@ -12,8 +12,11 @@ __pycache__/
 
 # Generated output files
 random_data.txt
-downloaded_images/
-death/
+temp/
+
+# PyInstaller packaging
+build/
+dist/
 
 # OS
 .DS_Store

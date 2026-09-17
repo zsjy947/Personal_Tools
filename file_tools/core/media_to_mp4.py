@@ -8,6 +8,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def find_ffmpeg() -> str | None:
+    """查找 ffmpeg：优先 PATH，打包成 exe 后也支持放在程序同目录。"""
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    if getattr(sys, "frozen", False):
+        candidate = Path(sys.executable).parent / "ffmpeg.exe"
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
 @dataclass
 class ConversionSummary:
     converted: int = 0
@@ -54,6 +66,7 @@ def convert_file(
     output: Path,
     overwrite: bool = False,
     dry_run: bool = False,
+    ffmpeg: str = "ffmpeg",
 ) -> str:
     if source.resolve() == output.resolve():
         print(f"跳过，输入已经是目标文件: {source}")
@@ -68,7 +81,7 @@ def convert_file(
 
     output.parent.mkdir(parents=True, exist_ok=True)
     command = [
-        "ffmpeg",
+        ffmpeg,
         "-hide_banner",
         "-loglevel",
         "error",
@@ -111,8 +124,9 @@ def convert_media(
     if not files:
         print("没有找到符合条件的文件。")
         return summary
-    if not dry_run and shutil.which("ffmpeg") is None:
-        raise RuntimeError("未找到 ffmpeg，请安装后将其加入 PATH")
+    ffmpeg = find_ffmpeg()
+    if not dry_run and ffmpeg is None:
+        raise RuntimeError("未找到 ffmpeg，请安装后将其加入 PATH，或放到程序同目录")
 
     for path in files:
         result = convert_file(
@@ -120,6 +134,7 @@ def convert_media(
             output_path_for(path, target_dir),
             overwrite=overwrite,
             dry_run=dry_run,
+            ffmpeg=ffmpeg or "ffmpeg",
         )
         setattr(summary, result, getattr(summary, result) + 1)
 

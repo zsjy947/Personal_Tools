@@ -1,15 +1,9 @@
-"""文件处理工具集的统一交互入口。"""
+"""文件处理工具集的统一交互入口。
+
+各工具模块在进入对应功能时才导入，缺少第三方依赖不影响菜单本身。
+"""
 
 from pathlib import Path
-
-from .delete_copy_files import delete_copy_files
-from .dot1_suffix import rename_dot1_files
-from .image_decrypt import (
-    normalize_suffixes as normalize_image_suffixes,
-    process_image,
-    process_image_directory,
-)
-from .media_to_mp4 import convert_media, normalize_suffixes
 
 
 class BackToMainMenu(Exception):
@@ -32,6 +26,8 @@ def ask_value(prompt: str) -> str:
 
 
 def run_image_decrypt() -> None:
+    from .core.image_decrypt import normalize_suffixes, process_image, process_image_directory
+
     while True:
         operation_value = ask_value("操作：1 混淆 / 2 解混淆")
         if operation_value in {"1", "2"}:
@@ -67,7 +63,7 @@ def run_image_decrypt() -> None:
 
     if is_directory:
         suffix_value = input("筛选后缀（留空处理常见图片格式，多个用空格或逗号分隔）: ")
-        suffixes = normalize_image_suffixes([suffix_value.replace(" ", ",")])
+        suffixes = normalize_suffixes([suffix_value.replace(" ", ",")])
         process_image_directory(
             operation,
             mode,
@@ -83,6 +79,8 @@ def run_image_decrypt() -> None:
 
 
 def run_media_to_mp4() -> None:
+    from .core.media_to_mp4 import convert_media, normalize_suffixes
+
     source = Path(ask_value("输入文件或目录").strip('"'))
     suffixes: set[str] = set()
     recursive = False
@@ -101,6 +99,8 @@ def run_media_to_mp4() -> None:
 
 
 def run_dot1(operation: str) -> None:
+    from .core.dot1_suffix import rename_dot1_files
+
     path = Path(ask_value("目标目录").strip('"'))
     rename_dot1_files(
         path,
@@ -111,6 +111,8 @@ def run_dot1(operation: str) -> None:
 
 
 def run_delete_copy_files() -> None:
+    from .core.delete_copy_files import delete_copy_files
+
     path = Path(ask_value("目标目录").strip('"'))
     execute = ask_yes_no("确认实际删除匹配文件；选择否仅预览")
     delete_copy_files(path, execute=execute)
@@ -118,7 +120,7 @@ def run_delete_copy_files() -> None:
 
 def run_gui() -> None:
     """启动可视化界面，关闭窗口后返回主菜单。"""
-    from .gui import main as gui_main
+    from .gui.app import main as gui_main
 
     gui_main()
 
