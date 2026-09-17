@@ -17,32 +17,53 @@ python -m file_tools
 3. 添加 `.1` 后缀
 4. 移除 `.1` 后缀
 5. 删除文件名以“副本”结尾的文件
+6. 打开可视化界面
 
-每项工具也可以独立使用命令行参数运行。
+每项工具也可以独立使用命令行参数运行，核心模块位于 `file_tools/core/`。
 
 ### 可视化界面
 
-双击项目根目录的 `file_tools_gui.pyw` 即可启动图形界面（无控制台窗口），也可以用命令启动，或在统一交互菜单中选择 `6. 打开可视化界面`：
+图形界面为深色侧边栏 + 卡片表单布局，已做高 DPI 适配（高分屏不模糊），路径一律通过资源管理器对话框选择，执行过程与结果汇总显示在底部日志区。三种启动方式：
 
 ```powershell
+# 1. 双击打包产物（推荐，见下文构建方法）
+dist\FileTools\FileTools.exe
+
+# 2. 命令行启动
 python -m file_tools.gui
+
+# 3. 统一交互菜单中选择「6. 打开可视化界面」
+python -m file_tools
 ```
 
-界面提供与菜单一致的五项功能，所有输入、输出路径均通过资源管理器对话框选择，执行过程与结果汇总显示在窗口底部日志区。界面只依赖标准库 tkinter；各工具在执行时才加载自身依赖，缺少依赖时界面仍可打开，仅对应工具执行时报错。
+界面只依赖标准库 tkinter；各工具在执行时才加载自身依赖，缺少依赖时界面仍能打开，仅对应工具执行时报错。
+
+### 打包成 exe
+
+不再使用 `.pyw` 脚本启动，改为用 PyInstaller 打包（需先 `pip install pyinstaller`）：
+
+```powershell
+python build_exe.py             # 目录模式：dist/FileTools/FileTools.exe，启动快，分发整个文件夹
+python build_exe.py --onefile   # 单文件模式：dist/FileTools.exe，便于拷贝，启动需解压
+```
+
+- 产物自带 Python 与全部依赖（含 numpy/numba/Pillow），体积约 150 MB。
+- 可用 `FileTools.exe --selftest` 验证打包产物内四项核心工具是否正常。
+- 媒体转 MP4 仍需 ffmpeg：加入 `PATH`，或把 `ffmpeg.exe` 放到 exe 同目录。
 
 ### 图像混淆/解混淆
 
 支持方块混淆、行像素混淆、像素混淆以及两种 PicEncrypt 模式，每种模式均可双向处理：
 
 ```powershell
-python -m file_tools.image_decrypt INPUT OUTPUT --operation encrypt --mode 1 --key KEY
-python -m file_tools.image_decrypt INPUT OUTPUT --operation decrypt --mode 1 --key KEY
+python -m file_tools.core.image_decrypt INPUT OUTPUT --operation encrypt --mode 1 --key KEY
+python -m file_tools.core.image_decrypt INPUT OUTPUT --operation decrypt --mode 1 --key KEY
 
 # 批量处理目录，保留子目录结构
-python -m file_tools.image_decrypt INPUT_DIR OUTPUT_DIR --operation encrypt --mode 1 --key KEY --recursive
+python -m file_tools.core.image_decrypt INPUT_DIR OUTPUT_DIR --operation encrypt --mode 1 --key KEY --recursive
 
 # 只处理指定后缀
-python -m file_tools.image_decrypt INPUT_DIR OUTPUT_DIR --operation decrypt --mode 1 --key KEY --suffix png webp
+python -m file_tools.core.image_decrypt INPUT_DIR OUTPUT_DIR --operation decrypt --mode 1 --key KEY --suffix png webp
 ```
 
 - 模式 1 至 3 的密钥为字符串。
@@ -59,13 +80,13 @@ python -m file_tools.image_decrypt INPUT_DIR OUTPUT_DIR --operation decrypt --mo
 
 ```powershell
 # 单个文件
-python -m file_tools.media_to_mp4 INPUT
+python -m file_tools.core.media_to_mp4 INPUT
 
 # 按后缀批量处理目录
-python -m file_tools.media_to_mp4 TARGET --suffix jpeg woff2 ts
+python -m file_tools.core.media_to_mp4 TARGET --suffix jpeg woff2 ts
 
 # 递归预览
-python -m file_tools.media_to_mp4 TARGET --suffix jpeg,wOFF2,ts --recursive --dry-run
+python -m file_tools.core.media_to_mp4 TARGET --suffix jpeg,wOFF2,ts --recursive --dry-run
 ```
 
 可选参数包括 `--output-dir`、`--overwrite`、`--recursive` 和 `--dry-run`。实际转换需要安装 [ffmpeg](https://ffmpeg.org/) 并将其加入 `PATH`。
@@ -73,8 +94,8 @@ python -m file_tools.media_to_mp4 TARGET --suffix jpeg,wOFF2,ts --recursive --dr
 ### `.1` 后缀管理
 
 ```powershell
-python -m file_tools.dot1_suffix add TARGET
-python -m file_tools.dot1_suffix remove TARGET --recursive --dry-run
+python -m file_tools.core.dot1_suffix add TARGET
+python -m file_tools.core.dot1_suffix remove TARGET --recursive --dry-run
 ```
 
 - 默认只处理目标目录的直接文件。
@@ -87,8 +108,8 @@ python -m file_tools.dot1_suffix remove TARGET --recursive --dry-run
 递归匹配文件名（不含扩展名）以“副本”结尾的文件。默认仅预览，必须使用 `--execute` 才会实际删除：
 
 ```powershell
-python -m file_tools.delete_copy_files TARGET
-python -m file_tools.delete_copy_files TARGET --execute
+python -m file_tools.core.delete_copy_files TARGET
+python -m file_tools.core.delete_copy_files TARGET --execute
 ```
 
 ## 图片下载 CLI
@@ -127,6 +148,7 @@ python shanghai_metro_fare/metro_fare.py --selftest
 
 - Python 3.10+
 - Python 依赖：`pip install -r requirements.txt`
+- 打包 exe：`pip install pyinstaller` 后运行 `python build_exe.py`
 - 媒体转 MP4 功能额外需要系统安装 ffmpeg
 - 上海地铁工具只使用 Python 标准库
 
@@ -135,18 +157,26 @@ python shanghai_metro_fare/metro_fare.py --selftest
 ```text
 .
 ├── file_tools/
-│   ├── __init__.py
-│   ├── __main__.py
-│   ├── gui.py
-│   ├── image_decrypt.py
-│   ├── media_to_mp4.py
-│   ├── dot1_suffix.py
-│   └── delete_copy_files.py
-├── file_tools_gui.pyw
+│   ├── __main__.py          # CLI 交互菜单（懒加载核心模块）
+│   ├── selftest.py          # 核心/打包产物自检
+│   ├── core/                # 四项核心工具（可独立 CLI 运行）
+│   │   ├── image_decrypt.py
+│   │   ├── media_to_mp4.py
+│   │   ├── dot1_suffix.py
+│   │   └── delete_copy_files.py
+│   └── gui/                 # tkinter 可视化界面包
+│       ├── __main__.py      # python -m file_tools.gui / PyInstaller 入口
+│       ├── app.py           # 主窗口：侧边栏、内容区、日志、状态栏
+│       ├── theme.py         # DPI 感知、缩放、配色与 ttk 样式
+│       ├── widgets.py       # 通用控件与表单辅助
+│       ├── runner.py        # 后台任务执行器
+│       ├── views/           # 各工具视图
+│       └── assets/app.ico   # 应用图标
+├── build_exe.py             # PyInstaller 打包脚本
 ├── download_images.py
 ├── shanghai_metro_fare/
 ├── requirements.txt
-├── CLAUDE.md
+├── AGENTS.md
 └── README.md
 ```
 
