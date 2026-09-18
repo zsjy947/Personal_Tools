@@ -71,7 +71,7 @@ class GrabView(ToolView):
         self.result_hint = ttk.Label(header, text="尚未嗅探", style="Hint.TLabel")
         self.result_hint.pack(side="left", padx=(scale(10), 0))
         ttk.Label(
-            header, text="点击“选择”列勾选，双击行在线预览", style="Hint.TLabel"
+            header, text="点击“选择”列勾选，双击行软件内预览", style="Hint.TLabel"
         ).pack(side="right")
 
         row += 1
@@ -206,11 +206,13 @@ class GrabView(ToolView):
         if not indices:
             messagebox.showinfo("提示", "请先勾选或双击要预览的资源。")
             return
-        from ...core.media_grab import open_preview
+        from ..preview import PreviewWindow
 
         try:
-            open_preview(self._resources, indices[:10], proxy=self._proxy_value())
-        except Exception as exc:  # noqa: BLE001 - 预览失败直接反馈
+            PreviewWindow(
+                self.frame, self._resources, indices[:10], proxy=self._proxy_value()
+            )
+        except Exception as exc:  # noqa: BLE001 - 预览窗口创建失败直接反馈
             messagebox.showerror("预览失败", str(exc))
 
     def _copy_links(self) -> None:

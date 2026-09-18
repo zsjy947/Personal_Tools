@@ -17,16 +17,16 @@
 """
 
 import argparse
-import base64
 import concurrent.futures
 import json
 import re
 import shutil
+import socket
+import subprocess
 import sys
 import tempfile
 import threading
 from dataclasses import dataclass, field
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
@@ -203,32 +203,92 @@ def _fetch_via_curl(
         return None
 
 
-def _connection_hint(exc: Exception, proxy: str | None) -> str:
+def _connection_hint(exc: Exception, proxy: str | None, attempts: list[str] | None = None) -> str:
     detail = str(exc).strip() or exc.__class__.__name__
     if proxy:
-        return f"连接失败（经代理 {proxy}）：{detail}"
+        return (
+            f"连接失败（经代理 {proxy}）：{detail}。"
+            "请确认代理软件已开启且端口正确，浏览器扩展内置节点的话需在代理客户端开启 HTTP 端口。"
+        )
+    tried = "、".join(attempts) if attempts else "直连"
     return (
-        f"连接失败：{detail}。该站点可能拒绝直连或被网络阻断"
-        "（浏览器能打开通常是因为走了代理）；"
-        "请在“代理”框填写代理地址后重试，例如 http://127.0.0.1:7890"
+        f"连接失败：{detail}。已自动尝试 {tried} 与本地常见代理端口（系统代理、"
+        "7890/7897/10809 等）均未成功。该站点可能被网络阻断——浏览器能打开通常是因为"
+        "扩展自带远程节点；请开启代理客户端的系统代理/HTTP 端口，或在「代理」框填入其地址。"
     )
+
+
+def _port_listening(port: int) -> bool:
+    with socket.socket() as probe:
+        probe.settimeout(0.4)
+        return probe.connect_ex(("127.0.0.1", port)) == 0
+
+
+COMMON_PROXY_PORTS = (7890, 7897, 10809, 10808, 1080, 8888, 8118, 2080, 9090, 1087, 33210)
+_detected_proxy: str | None = None  # 嗅探自动探测成功的代理，下载时复用
+
+
+def _candidate_proxies() -> list[str]:
+    """候选代理：系统代理（注册表）优先，其后常见本地端口。"""
+    candidates: list[str] = []
+    try:
+        import urllib.request
+
+        for value in urllib.request.getproxies().values():
+            if value and value not in candidates:
+                candidates.append(value)
+    except Exception:  # noqa: BLE001 - 系统代理读取失败不影响后续探测
+        pass
+    for port in COMMON_PROXY_PORTS:
+        candidate = f"http://127.0.0.1:{port}"
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def _effective_proxy(proxy: str | None) -> str | None:
+    return proxy or _detected_proxy
 
 
 def _fetch_page(
     session: requests.Session, url: str, timeout: float, *, referer=None, proxy=None
 ) -> tuple[str, str]:
-    """抓取页面文本，连接被拒时自动 curl_cffi 回退；返回 (文本, 最终地址)。"""
+    """抓取页面文本：直连 → curl_cffi 指纹回退 → 自动探测本机代理；返回 (文本, 最终地址)。"""
+    attempts: list[str] = []
+    last_error: Exception | None = None
     try:
         response = session.get(url, timeout=timeout)
         response.raise_for_status()
         if response.encoding is None:
             response.encoding = response.apparent_encoding
         return response.text, str(response.url)
-    except (requests.ConnectionError, requests.Timeout):
-        text = _fetch_via_curl(url, timeout, referer=referer, proxy=proxy)
-        if text is None:
-            raise
+    except (requests.ConnectionError, requests.Timeout) as exc:
+        attempts.append("直连")
+        last_error = exc
+
+    text = _fetch_via_curl(url, timeout, referer=referer, proxy=proxy)
+    if text is not None:
         return text, url
+
+    global _detected_proxy
+    for candidate in ([proxy] if proxy else _candidate_proxies()):
+        parsed = urlparse(candidate)
+        if (parsed.hostname or "").lower() in {"127.0.0.1", "localhost"}:
+            if not _port_listening(parsed.port or 80):
+                continue
+        try:
+            test_session = _new_session(referer, candidate)
+            response = test_session.get(url, timeout=timeout)
+            response.raise_for_status()
+            if response.encoding is None:
+                response.encoding = response.apparent_encoding
+            if proxy is None:
+                _detected_proxy = candidate
+                print(f"直连失败，已自动使用本机代理: {candidate}")
+            return response.text, str(response.url)
+        except requests.RequestException:
+            continue
+    raise RuntimeError(_connection_hint(last_error, proxy, attempts))
 
 
 def sniff_media(
@@ -257,12 +317,9 @@ def sniff_media(
     own_session = session is None
     if own_session:
         session = _new_session(referer, proxy)
-    try:
-        text, page_url = _fetch_page(
-            session, url, timeout, referer=referer, proxy=proxy
-        )
-    except requests.ConnectionError as exc:
-        raise RuntimeError(_connection_hint(exc, proxy)) from exc
+    text, page_url = _fetch_page(
+        session, url, timeout, referer=referer, proxy=proxy
+    )
     page_origin = _origin(page_url)
 
     results: list[MediaResource] = []
@@ -597,7 +654,7 @@ def download_direct(
 ) -> tuple[str, Path]:
     """流式下载单个媒体文件，返回 (状态, 保存路径)。"""
     if session is None:
-        session = _new_session(resource.headers.get("Referer"), proxy)
+        session = _new_session(resource.headers.get("Referer"), _effective_proxy(proxy))
     suffix = resource.suffix or ".bin"
     if resource.kind.startswith("dash-"):
         base_name = f"{resource.title} [{resource.label.split(' 时长')[0]}]" if resource.title else resource.label
@@ -828,162 +885,122 @@ def _merge_dash_pairs(
             print(f"合流失败: {resource.url}（保留分离流）", file=sys.stderr)
 
 
-# -------- 预览（本地代理 + 浏览器内播放） --------
+# -------- 软件内预览（内置 ffmpeg 抽帧） --------
 
-_AUDIO_SUFFIXES = {".mp3", ".m4a", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav", ".wma", ".ape"}
-_CONTENT_TYPES = {
-    ".mp4": "video/mp4", ".m4s": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime",
-    ".webm": "video/webm", ".mkv": "video/x-matroska", ".ts": "video/mp2t", ".flv": "video/x-flv",
-    ".m4a": "audio/mp4", ".mp3": "audio/mpeg", ".aac": "audio/aac", ".flac": "audio/flac",
-    ".ogg": "audio/ogg", ".opus": "audio/ogg", ".wav": "audio/wav",
-    ".m3u8": "application/vnd.apple.mpegurl",
-}
-
-_active_preview_server = None  # 保持引用避免 GC，新预览开启时关闭旧服务器
+AUDIO_SUFFIXES = {".mp3", ".m4a", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav", ".wma", ".ape"}
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif", ".ico", ".tiff"}
 
 
-def start_preview_server(resources: list[MediaResource], proxy: str | None = None):
-    """启动本地预览代理，返回 (服务器, base_url)。
-
-    路由：/i/<序号> 直接代理资源；/u/<token> 代理重写后的远端地址
-    （m3u8 内的分段/密钥地址会重写指向本地，hls.js 可直接播放）。
-    """
-    session = _new_session(proxy=proxy)
-    tokens: dict[str, tuple[str, MediaResource]] = {}
-
-    def register(remote_url: str, resource: MediaResource) -> str:
-        token = base64.urlsafe_b64encode(remote_url.encode()).decode()
-        tokens[token] = (remote_url, resource)
-        return f"/u/{token}"
-
-    def rewrite_m3u8(text: str, base_url: str, resource: MediaResource) -> str:
-        lines = []
-        for line in text.splitlines():
-            stripped = line.strip()
-            if stripped and not stripped.startswith("#"):
-                lines.append(register(urljoin(base_url, stripped), resource))
-            elif "URI=\"" in line:
-                def _repl(match, _line=line):
-                    absolute = urljoin(base_url, match.group(2))
-                    return match.group(1) + register(absolute, resource) + match.group(3)
-                lines.append(re.sub(r'(URI=")([^"]*)(")', _repl, line))
-            else:
-                lines.append(line)
-        return "\n".join(lines) + "\n"
-
-    class _Handler(BaseHTTPRequestHandler):
-        def log_message(self, *args) -> None:
-            pass
-
-        def do_GET(self) -> None:  # noqa: N802 - http.server 约定
-            try:
-                route = urlparse(self.path).path.lstrip("/").split("/")
-                if route[0] == "i" and len(route) == 2:
-                    resource = resources[int(route[1])]
-                    self._serve(resource.url, resource)
-                elif route[0] == "u" and len(route) == 2:
-                    remote, resource = tokens[route[1]]
-                    self._serve(remote, resource)
-                else:
-                    self.send_error(404)
-            except BrokenPipeError:
-                pass
-            except Exception as exc:  # noqa: BLE001 - 预览失败以 502 呈现
-                try:
-                    self.send_error(502, str(exc))
-                except OSError:
-                    pass
-
-        def _serve(self, remote_url: str, resource: MediaResource) -> None:
-            headers = {"User-Agent": DEFAULT_UA, "Accept": "*/*", **resource.headers}
-            if (self.headers.get("Range") or "").strip():
-                headers["Range"] = self.headers["Range"]
-            upstream = session.get(remote_url, headers=headers, stream=True, timeout=30)
-            content_type = upstream.headers.get("Content-Type", "").split(";")[0].strip()
-            is_playlist = remote_url.split("?")[0].endswith(".m3u8") or "mpegurl" in content_type
-            if is_playlist:
-                body = rewrite_m3u8(upstream.text, str(upstream.url), resource).encode()
-                upstream.close()
-                self.send_response(upstream.status_code)
-                self.send_header("Content-Type", _CONTENT_TYPES[".m3u8"])
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            status = upstream.status_code
-            self.send_response(status)
-            self.send_header("Content-Type", content_type or _CONTENT_TYPES.get(resource.suffix, "application/octet-stream"))
-            for name in ("Content-Length", "Content-Range", "Accept-Ranges"):
-                if upstream.headers.get(name):
-                    self.send_header(name, upstream.headers[name])
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            try:
-                for chunk in upstream.iter_content(chunk_size=64 * 1024):
-                    if chunk:
-                        self.wfile.write(chunk)
-            except (BrokenPipeError, ConnectionResetError, requests.RequestException):
-                pass
-            finally:
-                upstream.close()
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-    server.daemon_threads = True
-    global _active_preview_server
-    if _active_preview_server is not None:
-        _active_preview_server.shutdown()
-    _active_preview_server = server
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    return server, f"http://127.0.0.1:{server.server_address[1]}"
+def fetch_media_bytes(resource: MediaResource, *, timeout: float = 30) -> bytes:
+    """下载资源原始字节（图片预览用），自动复用已探测的代理。"""
+    session = _new_session(resource.headers.get("Referer"), _effective_proxy(None))
+    response = session.get(resource.url, timeout=timeout)
+    response.raise_for_status()
+    return response.content
 
 
-def build_preview_html(base_url: str, resources: list[MediaResource], indices: list[int]) -> str:
-    """生成预览页：普通流用 video/audio 播放，m3u8 交给 hls.js。"""
-    import html as html_module
+def _ffmpeg_header_args(resource: MediaResource) -> list[str]:
+    headers = {"User-Agent": DEFAULT_UA, **(resource.headers or {})}
+    joined = "".join(f"{key}: {value}\r\n" for key, value in headers.items() if value)
+    return ["-headers", joined] if joined else []
 
-    items: list[str] = []
-    scripts: list[str] = []
-    for order, index in enumerate(indices):
-        resource = resources[index]
-        src = f"{base_url}/i/{index}"
-        meta = html_module.escape(f"#{index + 1} {resource.kind_text} · {resource.label or '—'} · {resource.size_text}")
-        if resource.kind == "m3u8":
-            player = f'<video id="p{order}" controls playsinline></video>'
-            scripts.append(
-                f"(function(){{var v=document.getElementById('p{order}');"
-                f"if(window.Hls&&Hls.isSupported()){{var h=new Hls();h.loadSource('{src}');h.attachMedia(v);}}"
-                f"else if(v.canPlayType('application/vnd.apple.mpegurl')){{v.src='{src}';}}"
-                f"else{{v.outerHTML='<p class=meta>当前浏览器不支持 HLS 预览';}}}})();"
-            )
-        elif resource.suffix in _AUDIO_SUFFIXES or resource.kind == "dash-audio":
-            player = f'<audio controls src="{src}"></audio>'
-        else:
-            player = f'<video controls playsinline src="{src}"></video>'
-        items.append(f'<div class="item"><div class="meta">{meta}</div>{player}</div>')
-    return (
-        "<!doctype html><html><head><meta charset='utf-8'>"
-        "<title>媒体资源预览</title>"
-        "<script src='https://cdn.jsdelivr.net/npm/hls.js@1'></script>"
-        "<style>body{font-family:system-ui,'Microsoft YaHei',sans-serif;background:#0f172a;color:#e2e8f0;margin:24px}"
-        ".item{margin-bottom:28px}.meta{font-size:13px;color:#94a3b8;margin-bottom:6px}"
-        "video,audio{width:min(720px,92vw);display:block;background:#000;border-radius:8px}</style>"
-        "</head><body><h2 style='font-size:18px'>媒体资源预览</h2>"
-        + "".join(items)
-        + "<script>" + "".join(scripts) + "</script></body></html>"
+
+def _ffmpeg_proxy_args(resource: MediaResource, proxy: str | None) -> list[str]:
+    # ffmpeg 的 http 代理选项只对 http:// 输入可靠；https 走代理暂不支持
+    if not proxy or not resource.url.lower().startswith("http://"):
+        return []
+    return ["-http_proxy", proxy]
+
+
+def _parse_ffmpeg_duration(stderr: str) -> float | None:
+    match = re.search(r"Duration:\s*(\d+):(\d+):([\d.]+)", stderr)
+    if not match:
+        return None
+    hours, minutes, seconds = (float(part) for part in match.groups())
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def _ffmpeg_stream_info(
+    resource: MediaResource, *, timeout: float, proxy: str | None
+) -> tuple[str, float | None, bool]:
+    """ffmpeg -i 读取流信息，返回 (描述文本, 时长秒, 是否含视频流)。"""
+    ffmpeg = find_ffmpeg()
+    if not ffmpeg:
+        raise RuntimeError("未找到内置 ffmpeg，无法生成预览")
+    command = [
+        ffmpeg, "-hide_banner", "-nostdin",
+        *_ffmpeg_header_args(resource), *_ffmpeg_proxy_args(resource, proxy),
+        "-rw_timeout", str(int(timeout * 1_000_000)),
+        "-i", resource.url,
+    ]
+    result = run_hidden(
+        command, capture_output=True, text=True, errors="replace",
+        timeout=timeout + 15, check=False,
     )
+    stderr = result.stderr or ""
+    duration = _parse_ffmpeg_duration(stderr)
+    video = re.search(r"Stream #.*?: Video: ([^,\n]+)", stderr)
+    audio = re.search(r"Stream #.*?: Audio: ([^,\n]+)", stderr)
+    parts = []
+    if video:
+        parts.append(f"视频 {video.group(1).strip()}")
+    if audio:
+        parts.append(f"音频 {audio.group(1).strip()}")
+    if duration:
+        parts.append(f"时长 {int(duration // 60)}:{int(duration % 60):02d}")
+    return (" · ".join(parts) or "未解析到流信息"), duration, bool(video)
 
 
-def open_preview(resources: list[MediaResource], indices: list[int], proxy: str | None = None) -> str:
-    """打开浏览器预览选中资源（本地代理播放，不触发浏览器下载），返回预览页路径。"""
-    import webbrowser
+def capture_preview_frames(
+    resource: MediaResource,
+    *,
+    count: int = 3,
+    timeout: float = 25,
+    proxy: str | None = None,
+    workdir: Path,
+    tag: str = "r",
+) -> tuple[str, float | None, list[Path]]:
+    """用内置 ffmpeg 从视频流抽取帧图片（软件内预览用）。
 
-    _server, base_url = start_preview_server(resources, proxy=proxy)
-    page = build_preview_html(base_url, resources, indices)
-    path = Path(tempfile.gettempdir()) / "file_tools_preview.html"
-    path.write_text(page, encoding="utf-8")
-    webbrowser.open(path.as_uri())
-    return str(path)
+    返回 (流信息, 时长秒, 帧图片路径列表)；音频流只返回信息不给帧。
+    """
+    workdir.mkdir(parents=True, exist_ok=True)
+    proxy = _effective_proxy(proxy)
+    info, duration, has_video = _ffmpeg_stream_info(
+        resource, timeout=timeout, proxy=proxy
+    )
+    if not has_video or count <= 0:
+        return info, duration, []
+
+    if duration and duration >= 4:
+        stamps = [duration * factor for factor in (0.15, 0.45, 0.75)][:count]
+    else:
+        limit = max((duration or 2.0) - 0.2, 0)
+        stamps = [min(1.0 + index * 2.0, limit) for index in range(count)]
+
+    ffmpeg = find_ffmpeg()
+    frames: list[Path] = []
+    for index, stamp in enumerate(stamps):
+        output = workdir / f"prev_{tag}_{index}.jpg"
+        command = [
+            ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error",
+            *_ffmpeg_header_args(resource), *_ffmpeg_proxy_args(resource, proxy),
+            "-rw_timeout", str(int(timeout * 1_000_000)),
+            "-ss", f"{max(stamp, 0):.2f}", "-i", resource.url,
+            "-frames:v", "1", "-q:v", "3", "-y", str(output),
+        ]
+        try:
+            result = run_hidden(
+                command, capture_output=True, text=True, errors="replace",
+                timeout=timeout + 20, check=False,
+            )
+        except subprocess.TimeoutExpired:
+            continue
+        if result.returncode == 0 and output.exists() and output.stat().st_size > 0:
+            frames.append(output)
+    if not frames:
+        raise RuntimeError(f"预览抽帧失败（{info}）")
+    return info, duration, frames
 
 
 # -------- 高层入口 --------
@@ -1008,6 +1025,7 @@ def download_resources(
         print("没有可下载的资源。")
         return summary
 
+    proxy = _effective_proxy(proxy)
     saved: dict[int, Path] = {}
     for index, resource in enumerate(resources):
         try:
