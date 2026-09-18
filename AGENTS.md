@@ -8,7 +8,7 @@
 
 1. 核心工具位于 `file_tools/core/`，统一 CLI 入口为 `python -m file_tools`（懒加载核心模块）；可视化界面位于 `file_tools/gui/` 包，入口 `python -m file_tools.gui`；打包为 exe 用根目录 `python build_exe.py`。
 
-已弃置功能（上海地铁票价 `shanghai_metro_fare/`、根目录版图片下载脚本、旧版 `.1` 后缀/删除副本工具）归档在 `废弃` 分支，仅作存档不维护；不要把它们加回主分支。
+已弃置功能（上海地铁票价 `shanghai_metro_fare/`、根目录版图片下载脚本、旧版 `.1` 后缀/删除副本工具）归档在 `archive` 分支，仅作存档不维护；不要把它们加回主分支。
 
 用户输入、输出路径必须来自命令行参数或交互输入，不要在脚本中加入本机绝对路径或要求用户修改的路径常量。脚本自身附带的数据和模板可以通过 `Path(__file__)` 定位。
 
@@ -38,7 +38,9 @@
 - 内置 bilibili 适配：页面 `__INITIAL_STATE__` 取 bvid/cid/title，调 `x/player/playurl`（无需 wbi）拿 DASH 流，产出 `dash-video`/`dash-audio` 资源（带清晰度标签），下载主 CDN 失败自动换 `backupUrl`；选中视频+音频后用内置 ffmpeg 合流为以视频标题命名的 MP4。
 - m3u8：主播放列表自动选最高带宽，分段并发下载合并；AES-128 分段（`EXT-X-KEY`）依赖 `pycryptodome`/`cryptography`（懒导入）。
 - 资源统一为 `MediaResource`（url/suffix/kind/label/size/title/headers/fallback_urls）；`sniff_media()` 嗅探（`probe=True` 时并发 HEAD 探测体积，上限 `PROBE_LIMIT`）、`download_resources()` 下载选中资源（GUI 用）、`grab_media()` 保留序号流程（CLI/菜单用，先 `--list` 看明细再 `--pick`）。
-- 独立入口：`python -m file_tools.core.media_grab URL [-o OUTPUT] [--list] [--probe] [--pick N ...] [--all] [--no-mp4] [--referer URL]`。
+- 全链路支持代理（GUI「代理」框 / CLI `--proxy`，嗅探与下载共用）；连接被拒时 `_fetch_page()` 自动走 curl_cffi 浏览器指纹回退（懒导入），仍失败则抛出带代理提示的错误。
+- 预览：`start_preview_server()` 本地代理服务器（`/i/<序号>` 直接代理资源、`/u/<token>` 代理 m3u8 重写后的分段/密钥地址）+ `open_preview()` 生成预览页用浏览器内嵌播放（m3u8 走 hls.js），不触发浏览器下载。
+- 独立入口：`python -m file_tools.core.media_grab URL [-o OUTPUT] [--list] [--probe] [--pick N ...] [--all] [--no-mp4] [--referer URL] [--proxy URL]`。
 
 ### `file_tools/core/suffix_manager.py`
 
@@ -72,4 +74,4 @@
 - Python 3.10+
 - 虚拟环境通常位于 `.venv/`
 - 安装依赖：`pip install -r requirements.txt`（ffmpeg 由 `imageio-ffmpeg` 提供，系统无需安装）
-- `废弃` 分支为弃置功能存档（上海地铁票价、旧工具），只读不改
+- `archive` 分支为弃置功能存档（上海地铁票价、旧工具），只读不改

@@ -7,12 +7,17 @@
 - 针对 bilibili 等站点页面内不再内嵌播放地址的情况，内置站点适配：
   解析 `__INITIAL_STATE__` 后调用 playurl 接口获取 DASH 音视频流，
   下载选中的视频+音频后用内置 ffmpeg 合流封装为 MP4。
+- 被反爬或网络阻断的站点：请求失败时自动尝试 curl_cffi 浏览器指纹回退，
+  也可显式传入代理地址（GUI“代理”输入框 / CLI `--proxy`）。
+- 预览：`open_preview()` 启动本地代理服务器并生成预览页（浏览器内直接播放，
+  m3u8 经 hls.js 播放），避免点击资源链接触发浏览器下载。
 - m3u8 自动解析分段列表（主播放列表选最高带宽），并发下载后无损合并，
   有 ffmpeg（内置优先）时直接封装 MP4。
 - 支持 AES-128 加密分段（EXT-X-KEY，依赖 pycryptodome/cryptography）。
 """
 
 import argparse
+import base64
 import concurrent.futures
 import json
 import re
@@ -21,6 +26,7 @@ import sys
 import tempfile
 import threading
 from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
@@ -161,15 +167,68 @@ def _origin(url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
-def _new_session(referer: str | None = None) -> requests.Session:
+def _new_session(referer: str | None = None, proxy: str | None = None) -> requests.Session:
     session = requests.Session()
     session.headers.update({
         "User-Agent": DEFAULT_UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Upgrade-Insecure-Requests": "1",
     })
     if referer:
         session.headers["Referer"] = referer
+    if proxy:
+        session.proxies = {"http": proxy, "https": proxy}
     return session
+
+
+def _fetch_via_curl(
+    url: str, timeout: float, *, referer: str | None = None, proxy: str | None = None
+) -> str | None:
+    """curl_cffi 浏览器指纹回退；未安装或仍失败时返回 None。"""
+    try:
+        from curl_cffi import requests as curl_requests
+    except ImportError:
+        return None
+    kwargs: dict = {"timeout": timeout, "impersonate": "chrome"}
+    if referer:
+        kwargs["headers"] = {"Referer": referer}
+    if proxy:
+        kwargs["proxies"] = {"http": proxy, "https": proxy}
+    try:
+        response = curl_requests.get(url, **kwargs)
+        response.raise_for_status()
+        return response.text
+    except Exception:  # noqa: BLE001 - 回退失败统一交由上层提示
+        return None
+
+
+def _connection_hint(exc: Exception, proxy: str | None) -> str:
+    detail = str(exc).strip() or exc.__class__.__name__
+    if proxy:
+        return f"连接失败（经代理 {proxy}）：{detail}"
+    return (
+        f"连接失败：{detail}。该站点可能拒绝直连或被网络阻断"
+        "（浏览器能打开通常是因为走了代理）；"
+        "请在“代理”框填写代理地址后重试，例如 http://127.0.0.1:7890"
+    )
+
+
+def _fetch_page(
+    session: requests.Session, url: str, timeout: float, *, referer=None, proxy=None
+) -> tuple[str, str]:
+    """抓取页面文本，连接被拒时自动 curl_cffi 回退；返回 (文本, 最终地址)。"""
+    try:
+        response = session.get(url, timeout=timeout)
+        response.raise_for_status()
+        if response.encoding is None:
+            response.encoding = response.apparent_encoding
+        return response.text, str(response.url)
+    except (requests.ConnectionError, requests.Timeout):
+        text = _fetch_via_curl(url, timeout, referer=referer, proxy=proxy)
+        if text is None:
+            raise
+        return text, url
 
 
 def sniff_media(
@@ -180,6 +239,7 @@ def sniff_media(
     referer: str | None = None,
     probe: bool = False,
     session: requests.Session | None = None,
+    proxy: str | None = None,
 ) -> list[MediaResource]:
     """嗅探一个网页（或直连媒体地址）中的媒体资源。"""
     targets = suffixes or MEDIA_SUFFIXES
@@ -196,13 +256,13 @@ def sniff_media(
 
     own_session = session is None
     if own_session:
-        session = _new_session(referer)
-    response = session.get(url, timeout=timeout)
-    response.raise_for_status()
-    if response.encoding is None:
-        response.encoding = response.apparent_encoding
-    text = response.text
-    page_url = str(response.url)
+        session = _new_session(referer, proxy)
+    try:
+        text, page_url = _fetch_page(
+            session, url, timeout, referer=referer, proxy=proxy
+        )
+    except requests.ConnectionError as exc:
+        raise RuntimeError(_connection_hint(exc, proxy)) from exc
     page_origin = _origin(page_url)
 
     results: list[MediaResource] = []
@@ -533,10 +593,11 @@ def download_direct(
     session: requests.Session | None = None,
     timeout: float = 30,
     overwrite: bool = False,
+    proxy: str | None = None,
 ) -> tuple[str, Path]:
     """流式下载单个媒体文件，返回 (状态, 保存路径)。"""
     if session is None:
-        session = _new_session(resource.headers.get("Referer"))
+        session = _new_session(resource.headers.get("Referer"), proxy)
     suffix = resource.suffix or ".bin"
     if resource.kind.startswith("dash-"):
         base_name = f"{resource.title} [{resource.label.split(' 时长')[0]}]" if resource.title else resource.label
@@ -767,6 +828,164 @@ def _merge_dash_pairs(
             print(f"合流失败: {resource.url}（保留分离流）", file=sys.stderr)
 
 
+# -------- 预览（本地代理 + 浏览器内播放） --------
+
+_AUDIO_SUFFIXES = {".mp3", ".m4a", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav", ".wma", ".ape"}
+_CONTENT_TYPES = {
+    ".mp4": "video/mp4", ".m4s": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime",
+    ".webm": "video/webm", ".mkv": "video/x-matroska", ".ts": "video/mp2t", ".flv": "video/x-flv",
+    ".m4a": "audio/mp4", ".mp3": "audio/mpeg", ".aac": "audio/aac", ".flac": "audio/flac",
+    ".ogg": "audio/ogg", ".opus": "audio/ogg", ".wav": "audio/wav",
+    ".m3u8": "application/vnd.apple.mpegurl",
+}
+
+_active_preview_server = None  # 保持引用避免 GC，新预览开启时关闭旧服务器
+
+
+def start_preview_server(resources: list[MediaResource], proxy: str | None = None):
+    """启动本地预览代理，返回 (服务器, base_url)。
+
+    路由：/i/<序号> 直接代理资源；/u/<token> 代理重写后的远端地址
+    （m3u8 内的分段/密钥地址会重写指向本地，hls.js 可直接播放）。
+    """
+    session = _new_session(proxy=proxy)
+    tokens: dict[str, tuple[str, MediaResource]] = {}
+
+    def register(remote_url: str, resource: MediaResource) -> str:
+        token = base64.urlsafe_b64encode(remote_url.encode()).decode()
+        tokens[token] = (remote_url, resource)
+        return f"/u/{token}"
+
+    def rewrite_m3u8(text: str, base_url: str, resource: MediaResource) -> str:
+        lines = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#"):
+                lines.append(register(urljoin(base_url, stripped), resource))
+            elif "URI=\"" in line:
+                def _repl(match, _line=line):
+                    absolute = urljoin(base_url, match.group(2))
+                    return match.group(1) + register(absolute, resource) + match.group(3)
+                lines.append(re.sub(r'(URI=")([^"]*)(")', _repl, line))
+            else:
+                lines.append(line)
+        return "\n".join(lines) + "\n"
+
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args) -> None:
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802 - http.server 约定
+            try:
+                route = urlparse(self.path).path.lstrip("/").split("/")
+                if route[0] == "i" and len(route) == 2:
+                    resource = resources[int(route[1])]
+                    self._serve(resource.url, resource)
+                elif route[0] == "u" and len(route) == 2:
+                    remote, resource = tokens[route[1]]
+                    self._serve(remote, resource)
+                else:
+                    self.send_error(404)
+            except BrokenPipeError:
+                pass
+            except Exception as exc:  # noqa: BLE001 - 预览失败以 502 呈现
+                try:
+                    self.send_error(502, str(exc))
+                except OSError:
+                    pass
+
+        def _serve(self, remote_url: str, resource: MediaResource) -> None:
+            headers = {"User-Agent": DEFAULT_UA, "Accept": "*/*", **resource.headers}
+            if (self.headers.get("Range") or "").strip():
+                headers["Range"] = self.headers["Range"]
+            upstream = session.get(remote_url, headers=headers, stream=True, timeout=30)
+            content_type = upstream.headers.get("Content-Type", "").split(";")[0].strip()
+            is_playlist = remote_url.split("?")[0].endswith(".m3u8") or "mpegurl" in content_type
+            if is_playlist:
+                body = rewrite_m3u8(upstream.text, str(upstream.url), resource).encode()
+                upstream.close()
+                self.send_response(upstream.status_code)
+                self.send_header("Content-Type", _CONTENT_TYPES[".m3u8"])
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            status = upstream.status_code
+            self.send_response(status)
+            self.send_header("Content-Type", content_type or _CONTENT_TYPES.get(resource.suffix, "application/octet-stream"))
+            for name in ("Content-Length", "Content-Range", "Accept-Ranges"):
+                if upstream.headers.get(name):
+                    self.send_header(name, upstream.headers[name])
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            try:
+                for chunk in upstream.iter_content(chunk_size=64 * 1024):
+                    if chunk:
+                        self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError, requests.RequestException):
+                pass
+            finally:
+                upstream.close()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    server.daemon_threads = True
+    global _active_preview_server
+    if _active_preview_server is not None:
+        _active_preview_server.shutdown()
+    _active_preview_server = server
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+
+def build_preview_html(base_url: str, resources: list[MediaResource], indices: list[int]) -> str:
+    """生成预览页：普通流用 video/audio 播放，m3u8 交给 hls.js。"""
+    import html as html_module
+
+    items: list[str] = []
+    scripts: list[str] = []
+    for order, index in enumerate(indices):
+        resource = resources[index]
+        src = f"{base_url}/i/{index}"
+        meta = html_module.escape(f"#{index + 1} {resource.kind_text} · {resource.label or '—'} · {resource.size_text}")
+        if resource.kind == "m3u8":
+            player = f'<video id="p{order}" controls playsinline></video>'
+            scripts.append(
+                f"(function(){{var v=document.getElementById('p{order}');"
+                f"if(window.Hls&&Hls.isSupported()){{var h=new Hls();h.loadSource('{src}');h.attachMedia(v);}}"
+                f"else if(v.canPlayType('application/vnd.apple.mpegurl')){{v.src='{src}';}}"
+                f"else{{v.outerHTML='<p class=meta>当前浏览器不支持 HLS 预览';}}}})();"
+            )
+        elif resource.suffix in _AUDIO_SUFFIXES or resource.kind == "dash-audio":
+            player = f'<audio controls src="{src}"></audio>'
+        else:
+            player = f'<video controls playsinline src="{src}"></video>'
+        items.append(f'<div class="item"><div class="meta">{meta}</div>{player}</div>')
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<title>媒体资源预览</title>"
+        "<script src='https://cdn.jsdelivr.net/npm/hls.js@1'></script>"
+        "<style>body{font-family:system-ui,'Microsoft YaHei',sans-serif;background:#0f172a;color:#e2e8f0;margin:24px}"
+        ".item{margin-bottom:28px}.meta{font-size:13px;color:#94a3b8;margin-bottom:6px}"
+        "video,audio{width:min(720px,92vw);display:block;background:#000;border-radius:8px}</style>"
+        "</head><body><h2 style='font-size:18px'>媒体资源预览</h2>"
+        + "".join(items)
+        + "<script>" + "".join(scripts) + "</script></body></html>"
+    )
+
+
+def open_preview(resources: list[MediaResource], indices: list[int], proxy: str | None = None) -> str:
+    """打开浏览器预览选中资源（本地代理播放，不触发浏览器下载），返回预览页路径。"""
+    import webbrowser
+
+    _server, base_url = start_preview_server(resources, proxy=proxy)
+    page = build_preview_html(base_url, resources, indices)
+    path = Path(tempfile.gettempdir()) / "file_tools_preview.html"
+    path.write_text(page, encoding="utf-8")
+    webbrowser.open(path.as_uri())
+    return str(path)
+
+
 # -------- 高层入口 --------
 
 def download_resources(
@@ -779,6 +998,7 @@ def download_resources(
     referer: str | None = None,
     overwrite: bool = False,
     keep_segments: bool = False,
+    proxy: str | None = None,
 ) -> GrabSummary:
     """下载已选中的媒体资源（GUI 嗅探列表勾选后调用）。"""
     output_dir = Path(output_dir)
@@ -791,7 +1011,7 @@ def download_resources(
     saved: dict[int, Path] = {}
     for index, resource in enumerate(resources):
         try:
-            session = _new_session(referer or resource.headers.get("Referer"))
+            session = _new_session(referer or resource.headers.get("Referer"), proxy)
             if resource.kind == "m3u8":
                 status, path = download_m3u8(
                     resource.url,
@@ -806,7 +1026,8 @@ def download_resources(
                 )
             else:
                 status, path = download_direct(
-                    resource, output_dir, session=session, timeout=timeout, overwrite=overwrite
+                    resource, output_dir, session=session, timeout=timeout, overwrite=overwrite,
+                    proxy=proxy,
                 )
             if status != "failed":
                 saved[index] = path
@@ -840,10 +1061,11 @@ def grab_media(
     overwrite: bool = False,
     keep_segments: bool = False,
     probe: bool = False,
+    proxy: str | None = None,
 ) -> GrabSummary:
     """嗅探并（可选）下载媒体资源，CLI 与交互菜单共用。"""
     resources = sniff_media(
-        url, suffixes=suffixes, timeout=timeout, referer=referer, probe=probe
+        url, suffixes=suffixes, timeout=timeout, referer=referer, probe=probe, proxy=proxy
     )
     summary = GrabSummary(found=len(resources))
     if not resources:
@@ -875,6 +1097,7 @@ def grab_media(
         referer=referer,
         overwrite=overwrite,
         keep_segments=keep_segments,
+        proxy=proxy,
     )
 
 
@@ -902,6 +1125,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--concurrency", type=int, default=8, help="m3u8 分段下载并发数（默认 8）")
     parser.add_argument("--timeout", type=float, default=30, help="单次请求超时秒数（默认 30）")
     parser.add_argument("--referer", help="请求携带的 Referer（部分站点防盗链需要）")
+    parser.add_argument(
+        "--proxy",
+        help="HTTP 代理地址（如 http://127.0.0.1:7890），用于访问拒绝直连/被阻断的站点",
+    )
     parser.add_argument("--probe", action="store_true", help="列表时探测资源体积（HEAD 请求，稍慢）")
     parser.add_argument("--no-mp4", action="store_true", help="不封装 MP4，保留合并后的 TS")
     parser.add_argument("--overwrite", action="store_true", help="覆盖已有输出文件")
@@ -926,6 +1153,7 @@ def main(argv: list[str] | None = None) -> int:
             overwrite=args.overwrite,
             keep_segments=args.keep_segments,
             probe=args.probe,
+            proxy=args.proxy,
         )
     except (requests.RequestException, OSError, RuntimeError, ValueError) as exc:
         print(f"错误: {exc}", file=sys.stderr)

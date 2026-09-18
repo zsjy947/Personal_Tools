@@ -22,7 +22,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 APP_NAME = "FileTools"
-APP_VERSION = "2.1"
+APP_VERSION = "2.2"
 ENTRY = ROOT / "file_tools" / "gui" / "__main__.py"
 ICON = ROOT / "file_tools" / "gui" / "assets" / "app.ico"
 BUILD_DIR = ROOT / "build"
@@ -67,7 +67,7 @@ def ensure_pyinstaller() -> None:
 
 
 def ensure_icon() -> Path | None:
-    """返回图标路径；缺失时用 Pillow 生成一个。"""
+    """返回图标路径；缺失时用 Pillow 高分辨率绘制（渐变底 + 文档 + 下载角标）。"""
     if ICON.is_file():
         return ICON
     try:
@@ -77,15 +77,97 @@ def ensure_icon() -> Path | None:
         return None
 
     ICON.parent.mkdir(parents=True, exist_ok=True)
-    size = 256
+    final = 256
+    ss = 4  # 超采样：1024 绘制后缩到 256，边缘平滑
+    size = final * ss
+
     image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    # 垂直渐变蓝色底（先画 1×size 再拉伸），圆角蒙版
+    top, bottom = (59, 130, 246), (30, 58, 138)
+    column = Image.new("RGBA", (1, size))
+    for y in range(size):
+        t = y / (size - 1)
+        column.putpixel(
+            (0, y),
+            tuple(round(a + (b - a) * t) for a, b in zip(top, bottom)) + (255,),
+        )
+    gradient = column.resize((size, size))
+    mask = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, size - 1, size - 1), radius=int(size * 0.225), fill=255
+    )
+    image.paste(gradient, (0, 0), mask)
     draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((6, 6, 250, 250), radius=58, fill=(37, 99, 235, 255))
-    draw.rounded_rectangle((84, 48, 172, 208), radius=14, fill=(255, 255, 255, 255))
-    draw.polygon([(140, 48), (172, 82), (140, 82)], fill=(37, 99, 235, 255))
-    for y in (102, 132, 162):
-        draw.rounded_rectangle((100, y, 156, y + 12), radius=6, fill=(96, 165, 250, 255))
-    image.save(ICON, sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+
+    # 白色文档（右上角折角）
+    sheet = (int(size * 0.285), int(size * 0.20), int(size * 0.715), int(size * 0.80))
+    draw.rounded_rectangle(sheet, radius=int(size * 0.055), fill=(255, 255, 255, 255))
+    fold = int(size * 0.115)
+    fx1, fy1 = sheet[2] - fold, sheet[1]
+    draw.polygon(
+        [(fx1, fy1), (sheet[2], fy1), (sheet[2], fy1 + fold)],
+        fill=(191, 219, 254, 255),
+    )
+    draw.rounded_rectangle(
+        (fx1, fy1, sheet[2], fy1 + fold), radius=int(size * 0.03), fill=(219, 234, 254, 255)
+    )
+    draw.polygon(
+        [(fx1, fy1 + fold), (sheet[2], fy1 + fold), (sheet[2], fy1)],
+        fill=(191, 219, 254, 255),
+    )
+
+    # 文档内容条
+    bar_y = int(size * 0.36)
+    for index, width in enumerate((0.27, 0.21, 0.24)):
+        y = bar_y + index * int(size * 0.105)
+        draw.rounded_rectangle(
+            (int(size * 0.35), y, int(size * 0.35 + size * width), y + int(size * 0.045)),
+            radius=int(size * 0.022),
+            fill=(147, 197, 253, 255),
+        )
+
+    # 右下角下载角标：白圈 + 蓝底 + 白色下载箭头
+    badge_c = (int(size * 0.685), int(size * 0.685))
+    badge_r = int(size * 0.165)
+    draw.ellipse(
+        (badge_c[0] - badge_r, badge_c[1] - badge_r, badge_c[0] + badge_r, badge_c[1] + badge_r),
+        fill=(255, 255, 255, 255),
+    )
+    inner_r = int(badge_r * 0.86)
+    draw.ellipse(
+        (badge_c[0] - inner_r, badge_c[1] - inner_r, badge_c[0] + inner_r, badge_c[1] + inner_r),
+        fill=(37, 99, 235, 255),
+    )
+    shaft_w = int(badge_r * 0.30)
+    top_y = badge_c[1] - int(badge_r * 0.52)
+    bottom_y = badge_c[1] + int(badge_r * 0.10)
+    draw.rounded_rectangle(
+        (badge_c[0] - shaft_w // 2, top_y, badge_c[0] + shaft_w // 2, bottom_y),
+        radius=shaft_w // 2,
+        fill=(255, 255, 255, 255),
+    )
+    head_w = int(badge_r * 0.62)
+    head_h = int(badge_r * 0.42)
+    draw.polygon(
+        [
+            (badge_c[0], bottom_y + head_h),
+            (badge_c[0] - head_w, bottom_y - int(head_h * 0.15)),
+            (badge_c[0] + head_w, bottom_y - int(head_h * 0.15)),
+        ],
+        fill=(255, 255, 255, 255),
+    )
+    draw.rounded_rectangle(
+        (badge_c[0] - int(badge_r * 0.42), bottom_y + int(head_h * 1.05),
+         badge_c[0] + int(badge_r * 0.42), bottom_y + int(head_h * 1.05) + int(badge_r * 0.14)),
+        radius=int(badge_r * 0.07),
+        fill=(255, 255, 255, 255),
+    )
+
+    image = image.resize((final, final), Image.LANCZOS)
+    image.save(
+        ICON,
+        sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+    )
     print(f"已生成图标: {ICON}")
     return ICON
 
@@ -125,9 +207,11 @@ def build(onefile: bool) -> None:
         # 界面里的工具模块是执行任务时才导入，显式收集防止漏打包
         "--collect-submodules",
         "file_tools.core",
-        # 内置 ffmpeg（imageio-ffmpeg），媒体处理不依赖系统安装
+        # 内置 ffmpeg（imageio-ffmpeg）与 curl_cffi（浏览器指纹回退）
         "--collect-all",
         "imageio_ffmpeg",
+        "--collect-all",
+        "curl_cffi",
         "--version-file",
         str(version_file),
     ]
