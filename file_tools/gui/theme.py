@@ -10,7 +10,7 @@ import tkinter.font as tkfont
 from tkinter import ttk
 
 APP_NAME = "文件处理工具"
-APP_VERSION = "2.1"
+APP_VERSION = "2.2"
 
 COLORS = {
     "bg": "#eef1f5",
@@ -185,21 +185,24 @@ def setup_theme(root: tk.Tk) -> None:
     )
     style.configure(
         "Ghost.TButton",
-        background=c["card"],
-        foreground=c["text_muted"],
-        borderwidth=scale(1),
-        relief="flat",
-        bordercolor=c["card_border"],
-        lightcolor=c["card_border"],
-        darkcolor=c["card_border"],
-        padding=(scale(10), scale(3)),
+        background="#fbfcfe",
+        foreground=c["text"],
+        borderwidth=scale(1.5),
+        relief="solid",
+        bordercolor="#96a7bc",
+        lightcolor="#96a7bc",
+        darkcolor="#96a7bc",
+        focusthickness=0,
+        padding=(scale(12), scale(4)),
+        font=FONTS["base"],
     )
     style.map(
         "Ghost.TButton",
-        background=[("active", c["hover"])],
+        background=[("pressed", "#e6ecf4"), ("active", "#f1f5f9")],
         foreground=[("active", c["text"])],
-        lightcolor=[("active", c["card_border"])],
-        darkcolor=[("active", c["card_border"])],
+        bordercolor=[("pressed", "#6f8299"), ("active", "#6f8299")],
+        lightcolor=[("active", "#6f8299")],
+        darkcolor=[("active", "#6f8299")],
     )
 
     for name in ("Option.TCheckbutton", "Option.TRadiobutton"):
@@ -209,14 +212,7 @@ def setup_theme(root: tk.Tk) -> None:
             background=[("active", c["card"])],
             foreground=[("disabled", "#b6bcc7")],
         )
-    style.map(
-        "Option.TCheckbutton",
-        indicatorcolor=[("selected", c["accent"])],
-    )
-    style.map(
-        "Option.TRadiobutton",
-        indicatorcolor=[("selected", c["accent"])],
-    )
+    _install_round_indicators(style)
 
     style.configure(
         "Slim.Horizontal.TProgressbar",
@@ -227,3 +223,121 @@ def setup_theme(root: tk.Tk) -> None:
         bordercolor="#e5e7eb",
         thickness=scale(4),
     )
+
+
+# -------- 圆形指示器（单选=圆圈圆点，复选=圆圈对勾） --------
+
+_INDICATOR_IMAGES: list = []  # 持有 PhotoImage 引用，防止被垃圾回收
+
+
+def _install_round_indicators(style: ttk.Style) -> None:
+    """用 PIL 绘制的圆形指示图替换默认方框选中样式，提升观感一致性。"""
+    try:
+        from PIL import Image, ImageDraw, ImageTk
+    except ImportError:
+        return
+
+    size = max(14, scale(17))
+    ss = 4  # 超采样倍数，缩放后边缘平滑
+    accent = COLORS["accent"]
+    ring_off, ring_hover, ring_disabled = "#9aa6b6", accent, "#cfd6e0"
+    dot_disabled = "#a8c0e8"
+
+    def photo(painter) -> "ImageTk.PhotoImage":
+        img = Image.new("RGBA", (size * ss, size * ss), (0, 0, 0, 0))
+        painter(ImageDraw.Draw(img), size * ss)
+        rendered = img.resize((size, size), Image.LANCZOS)
+        return ImageTk.PhotoImage(rendered)
+
+    def ring(draw, s, color, *, dot=False, check=False, fill=None):
+        width = max(2, int(s * 0.085))
+        margin = width + int(s * 0.05)
+        draw.ellipse([margin, margin, s - margin, s - margin], outline=color, width=width)
+        if fill:
+            inner = width + int(s * 0.05)
+            draw.ellipse([inner, inner, s - inner, s - inner], fill=fill)
+        if dot:
+            radius = (s - 2 * margin) * 0.30
+            center = s / 2
+            draw.ellipse(
+                [center - radius, center - radius, center + radius, center + radius],
+                fill=color,
+            )
+        if check:
+            stroke = max(2, int(s * 0.10))
+            draw.line(
+                [(s * 0.30, s * 0.52), (s * 0.44, s * 0.66), (s * 0.71, s * 0.34)],
+                fill=color,
+                width=stroke,
+                joint="curve",
+            )
+
+    def circle_painter(color, **kwargs):
+        return lambda draw, s: ring(draw, s, color, **kwargs)
+
+    # 圆圈圆点（单选）：选中态实心圆点，未选中仅圆圈
+    states = {
+        "off": photo(circle_painter(ring_off)),
+        "hover": photo(circle_painter(ring_hover)),
+        "on": photo(circle_painter(accent, dot=True)),
+        "off_dis": photo(circle_painter(ring_disabled)),
+        "on_dis": photo(circle_painter(dot_disabled, dot=True)),
+    }
+    # 圆圈对勾（复选）：选中带底色对勾，未选中仅圆圈
+    check_states = {
+        "off": photo(circle_painter(ring_off)),
+        "hover": photo(circle_painter(ring_hover)),
+        "on": photo(circle_painter(accent, fill="#eff6ff", check=True)),
+        "off_dis": photo(circle_painter(ring_disabled)),
+        "on_dis": photo(circle_painter(dot_disabled, fill="#eff6ff", check=True)),
+    }
+    _INDICATOR_IMAGES.extend(states.values())
+    _INDICATOR_IMAGES.extend(check_states.values())
+
+    style.element_create(
+        "FileTools.radio", "image", states["off"],
+        ("active", states["hover"]),
+        ("selected", states["on"]),
+        ("disabled", states["off_dis"]),
+        ("disabled selected", states["on_dis"]),
+    )
+    style.element_create(
+        "FileTools.check", "image", check_states["off"],
+        ("active", check_states["hover"]),
+        ("selected", check_states["on"]),
+        ("disabled", check_states["off_dis"]),
+        ("disabled selected", check_states["on_dis"]),
+    )
+    style.layout(
+        "Option.TRadiobutton",
+        [
+            ("Radiobutton.padding", {
+                "children": [
+                    ("FileTools.radio", {"side": "left", "sticky": ""}),
+                    ("Radiobutton.focus", {
+                        "children": [("Radiobutton.label", {"sticky": ""})],
+                        "sticky": "",
+                    }),
+                ],
+                "sticky": "we",
+            }),
+        ],
+    )
+    style.layout(
+        "Option.TCheckbutton",
+        [
+            ("Checkbutton.padding", {
+                "children": [
+                    ("FileTools.check", {"side": "left", "sticky": ""}),
+                    ("Checkbutton.focus", {
+                        "children": [("Checkbutton.label", {"sticky": ""})],
+                        "sticky": "",
+                    }),
+                ],
+                "sticky": "we",
+            }),
+        ],
+    )
+    gap = scale(6)
+    style.configure("Option.TRadiobutton", padding=(gap, scale(2)))
+    style.configure("Option.TCheckbutton", padding=(gap, scale(2)))

@@ -1,7 +1,6 @@
 """网页媒体嗅探下载视图：资源列表 + 预览 + 勾选下载（参考猫抓交互）。"""
 
 import tkinter as tk
-import webbrowser
 from tkinter import filedialog, messagebox, ttk
 
 from ..theme import COLORS, FONTS, scale
@@ -16,7 +15,7 @@ class GrabView(ToolView):
     TITLE = "网页媒体下载"
     SUBTITLE = (
         "嗅探网页中的视频/音频资源（对齐猫抓识别范围，支持 B 站 DASH 音视频合流），"
-        "先查看列表再勾选下载。"
+        "先查看列表再勾选下载；拒绝直连的站点可填代理。"
     )
     RUN_TEXT = "下载选中"
 
@@ -39,6 +38,17 @@ class GrabView(ToolView):
         url_box.grid(row=row, column=1, sticky="ew", pady=scale(7))
 
         row += 1
+        form_label(body, row, "代理")
+        self.proxy = tk.StringVar()
+        entry_proxy = ttk.Entry(body, textvariable=self.proxy)
+        entry_proxy.grid(row=row, column=1, sticky="ew", pady=scale(7))
+        ttk.Label(
+            body,
+            text="可选，如 http://127.0.0.1:7890",
+            style="Hint.TLabel",
+        ).grid(row=row, column=2, sticky="w")
+
+        row += 1
         form_label(body, row, "输出目录")
         self.output_dir = tk.StringVar()
         path_row(body, row, self.output_dir, self._browse_output)
@@ -56,14 +66,22 @@ class GrabView(ToolView):
 
         row += 1
         header = ttk.Frame(body, style="Card.TFrame")
-        header.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(scale(14), scale(6)))
+        header.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(scale(14), scale(6)))
         ttk.Label(header, text="嗅探结果", style="Section.TLabel").pack(side="left")
         self.result_hint = ttk.Label(header, text="尚未嗅探", style="Hint.TLabel")
         self.result_hint.pack(side="left", padx=(scale(10), 0))
+        ttk.Label(
+            header, text="点击“选择”列勾选，双击行在线预览", style="Hint.TLabel"
+        ).pack(side="right")
 
         row += 1
+        table = ttk.Frame(body, style="Card.TFrame")
+        table.grid(row=row, column=0, columnspan=3, sticky="nsew")
+        table.rowconfigure(0, weight=1)
+        table.columnconfigure(0, weight=1)
         self.tree = ttk.Treeview(
-            body,
+            table,
+            style="Grab.Treeview",
             columns=("sel", "type", "label", "size", "fmt", "url"),
             show="headings",
             selectmode="none",
@@ -71,17 +89,26 @@ class GrabView(ToolView):
         )
         for cid, text, width, anchor, stretch in (
             ("sel", "选择", scale(44), "center", False),
-            ("type", "类型", scale(96), "w", False),
-            ("label", "清晰度 / 说明", scale(190), "w", False),
-            ("size", "大小", scale(72), "e", False),
-            ("fmt", "格式", scale(56), "w", False),
-            ("url", "地址", scale(320), "w", True),
+            ("type", "类型", scale(90), "w", False),
+            ("label", "清晰度 / 说明", scale(170), "w", False),
+            ("size", "大小", scale(70), "e", False),
+            ("fmt", "格式", scale(54), "w", False),
+            ("url", "地址", scale(340), "w", True),
         ):
             self.tree.heading(cid, text=text)
             self.tree.column(
-                cid, width=width, minwidth=width, anchor=anchor, stretch=stretch
+                cid,
+                width=width,
+                minwidth=scale(40) if cid == "sel" else scale(60),
+                anchor=anchor,
+                stretch=stretch,
             )
-        self.tree.grid(row=row, column=0, columnspan=2, sticky="nsew")
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb = ttk.Scrollbar(table, orient="vertical", command=self.tree.yview)
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb = ttk.Scrollbar(table, orient="horizontal", command=self.tree.xview)
+        hsb.grid(row=1, column=0, sticky="ew")
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         style = ttk.Style(self.tree)
         style.configure(
             "Grab.Treeview",
@@ -112,7 +139,7 @@ class GrabView(ToolView):
 
         row += 1
         actions = ttk.Frame(body, style="Card.TFrame")
-        actions.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(scale(10), 0))
+        actions.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(scale(10), 0))
         ttk.Button(actions, text="全选", style="Ghost.TButton", command=self._check_all).pack(side="left")
         ttk.Button(actions, text="清空选择", style="Ghost.TButton", command=self._uncheck_all).pack(
             side="left", padx=(scale(8), 0)
@@ -127,9 +154,6 @@ class GrabView(ToolView):
             actions, text=self.RUN_TEXT, style="Accent.TButton", command=self._run
         )
         self.run_button.pack(side="right")
-        ttk.Label(
-            actions, text="点击“选择”列勾选；双击行在浏览器预览", style="Hint.TLabel"
-        ).pack(side="right", padx=(0, scale(12)))
 
         self.app.register_run_button(self.sniff_button)
         self.app.register_run_button(self.run_button)
@@ -178,18 +202,16 @@ class GrabView(ToolView):
         self._preview_items(sorted(self._checked, key=lambda i: self.tree.index(i)))
 
     def _preview_items(self, iids: list[str]) -> None:
-        opened = 0
-        for iid in iids:
-            index = self._iid_index(iid)
-            if index is None:
-                continue
-            webbrowser.open(self._resources[index].url)
-            opened += 1
-            if opened >= 5:
-                messagebox.showinfo("提示", "一次最多预览 5 个资源。")
-                break
-        if not opened:
+        indices = [i for i in (self._iid_index(iid) for iid in iids) if i is not None]
+        if not indices:
             messagebox.showinfo("提示", "请先勾选或双击要预览的资源。")
+            return
+        from ...core.media_grab import open_preview
+
+        try:
+            open_preview(self._resources, indices[:10], proxy=self._proxy_value())
+        except Exception as exc:  # noqa: BLE001 - 预览失败直接反馈
+            messagebox.showerror("预览失败", str(exc))
 
     def _copy_links(self) -> None:
         links = [
@@ -209,6 +231,10 @@ class GrabView(ToolView):
             return self.tree.index(iid)
         except tk.TclError:
             return None
+
+    def _proxy_value(self) -> str | None:
+        value = self.proxy.get().strip().strip('"')
+        return value or None
 
     def _fill_tree(self, resources: list) -> None:
         self.tree.delete(*self.tree.get_children())
@@ -252,11 +278,12 @@ class GrabView(ToolView):
         if not url:
             messagebox.showwarning("缺少参数", "请先输入网页或媒体地址。")
             return
+        proxy = self._proxy_value()
 
         def worker() -> str:
             from ...core.media_grab import sniff_media
 
-            resources = sniff_media(url, probe=True)
+            resources = sniff_media(url, probe=True, proxy=proxy)
             print(f"嗅探到 {len(resources)} 个媒体资源")
             self._sniffed = resources
             if not resources:
@@ -283,11 +310,12 @@ class GrabView(ToolView):
             return
         output_dir = self.output_dir.get().strip().strip('"') or "media_downloads"
         to_mp4 = self.to_mp4.get()
+        proxy = self._proxy_value()
 
         def worker() -> str:
             from ...core.media_grab import download_resources
 
-            summary = download_resources(selected, output_dir, to_mp4=to_mp4)
+            summary = download_resources(selected, output_dir, to_mp4=to_mp4, proxy=proxy)
             return (
                 f"下载完成：下载 {summary.downloaded}，合流 {summary.merged}，"
                 f"跳过 {summary.skipped}，失败 {summary.failed}，详见运行日志。"

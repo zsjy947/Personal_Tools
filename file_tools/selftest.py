@@ -193,6 +193,25 @@ def _test_media_grab(workdir: Path) -> None:
             decrypted = out_enc / "enc.ts"
             assert summary.downloaded == 1 and decrypted.exists(), "AES-128 m3u8 下载失败"
             assert decrypted.read_bytes() == plaintext[0], "AES-128 解密结果不一致"
+
+        # 预览代理：m3u8 重写为本地地址、分段可回源播放
+        import requests as http_client
+
+        from .core.media_grab import build_preview_html, sniff_media, start_preview_server
+
+        resources = sniff_media(f"{base}/index.html")
+        _server, preview_base = start_preview_server(resources)
+        try:
+            playlist = http_client.get(f"{preview_base}/i/0", timeout=10)
+            assert "mpegurl" in playlist.headers.get("Content-Type", ""), "预览 m3u8 类型不符"
+            assert "/u/" in playlist.text, "m3u8 未重写为本地代理地址"
+            seg_token = playlist.text.splitlines()[4].rsplit("/u/", 1)[1]
+            segment = http_client.get(f"{preview_base}/u/{seg_token}", timeout=10)
+            assert segment.content == plaintext[0], "预览代理分段内容不符"
+            html = build_preview_html(preview_base, resources, [0, 1])
+            assert "hls.js" in html and "<video" in html, "预览页生成不符"
+        finally:
+            _server.shutdown()
     finally:
         server.shutdown()
 
