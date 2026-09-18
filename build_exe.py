@@ -10,7 +10,9 @@
 说明：
 - 依赖 numpy/numba/llvmlite，产物体积较大（数百 MB）；目录模式免解压、启动更快，
   分发时打包整个 FileTools 文件夹即可。
-- 媒体转 MP4 仍需 ffmpeg：保持加入 PATH，或把 ffmpeg.exe 放到 exe 同目录。
+- ffmpeg 通过 imageio-ffmpeg 内置进 exe，媒体转 MP4/嗅探合流等功能不依赖系统
+  安装、也不会弹出外部命令行窗口（功能不出域）；如需替换版本，可把 ffmpeg.exe
+  放到 exe 同目录。
 """
 
 import argparse
@@ -20,7 +22,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 APP_NAME = "FileTools"
-APP_VERSION = "2.0"
+APP_VERSION = "2.1"
 ENTRY = ROOT / "file_tools" / "gui" / "__main__.py"
 ICON = ROOT / "file_tools" / "gui" / "assets" / "app.ico"
 BUILD_DIR = ROOT / "build"
@@ -123,6 +125,9 @@ def build(onefile: bool) -> None:
         # 界面里的工具模块是执行任务时才导入，显式收集防止漏打包
         "--collect-submodules",
         "file_tools.core",
+        # 内置 ffmpeg（imageio-ffmpeg），媒体处理不依赖系统安装
+        "--collect-all",
+        "imageio_ffmpeg",
         "--version-file",
         str(version_file),
     ]

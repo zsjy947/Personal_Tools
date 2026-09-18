@@ -22,7 +22,7 @@ from .base import ToolView
 class MediaView(ToolView):
     ID = "media"
     TITLE = "伪装媒体转 MP4"
-    SUBTITLE = "将真实内容为视频的文件无损封装为 MP4（需要系统安装 ffmpeg）。"
+    SUBTITLE = "将真实内容为视频的文件无损封装为 MP4（ffmpeg 已内置，全程无外部窗口）。"
     RUN_TEXT = "开始转换"
 
     def build(self, parent) -> None:

@@ -98,24 +98,56 @@ def run_media_to_mp4() -> None:
     )
 
 
-def run_dot1(operation: str) -> None:
-    from .core.dot1_suffix import rename_dot1_files
+def run_suffix_manager() -> None:
+    from .core.suffix_manager import manage_suffix
 
     path = Path(ask_value("目标目录").strip('"'))
-    rename_dot1_files(
+    marker = ask_value("文件名标记（如 .1 或 副本）")
+    print("操作: 1 添加标记 / 2 移除标记 / 3 删除匹配文件")
+    while True:
+        choice = ask_value("操作")
+        if choice in {"1", "2", "3"}:
+            break
+        print("错误: 操作必须是 1 至 3。")
+    operation = {"1": "add", "2": "remove", "3": "delete"}[choice]
+    manage_suffix(
         path,
+        marker,
         operation,
         recursive=ask_yes_no("递归处理子目录"),
-        dry_run=ask_yes_no("仅预览，不重命名", default=True),
+        dry_run=ask_yes_no("仅预览，不实际执行", default=True),
     )
 
 
-def run_delete_copy_files() -> None:
-    from .core.delete_copy_files import delete_copy_files
+def run_download_images() -> None:
+    from .core.download_images import download_images
 
-    path = Path(ask_value("目标目录").strip('"'))
-    execute = ask_yes_no("确认实际删除匹配文件；选择否仅预览")
-    delete_copy_files(path, execute=execute)
+    list_path = Path(ask_value("链接列表路径（CSV/TXT）").strip('"'))
+    output_value = input("输出目录（留空使用 downloaded_images）: ").strip().strip('"')
+    download_images(list_path, output_value or "downloaded_images")
+
+
+def run_media_grab() -> None:
+    from .core.media_grab import grab_media
+
+    url = ask_value("输入网页或直接的媒体/m3u8 地址").strip('"')
+    output_value = input("输出目录（留空使用 media_downloads）: ").strip().strip('"')
+    output = output_value or "media_downloads"
+    grab_media(url, output, list_only=True, probe=True)
+    if not ask_yes_no("是否下载部分资源（选否结束）"):
+        return
+
+    raw = input("下载第几个资源（序号，空格分隔；留空=全部）: ").strip()
+    picks = [int(item) for item in raw.split()] if raw else None
+    grab_media(
+        url,
+        output,
+        picks=picks,
+        grab_all=not raw,
+        concurrency=8,
+        to_mp4=ask_yes_no("视频流自动封装 MP4（选否保留原始流）", default=True),
+        overwrite=ask_yes_no("覆盖已有输出文件"),
+    )
 
 
 def run_gui() -> None:
@@ -144,9 +176,9 @@ def main() -> int:
     actions = {
         "1": run_image_decrypt,
         "2": run_media_to_mp4,
-        "3": lambda: run_dot1("add"),
-        "4": lambda: run_dot1("remove"),
-        "5": run_delete_copy_files,
+        "3": run_suffix_manager,
+        "4": run_media_grab,
+        "5": run_download_images,
         "6": run_gui,
     }
     while True:
@@ -154,9 +186,9 @@ def main() -> int:
             "\n文件处理工具\n"
             "1. 图像混淆/解混淆\n"
             "2. 伪装媒体文件转 MP4\n"
-            "3. 添加 .1 后缀\n"
-            "4. 移除 .1 后缀\n"
-            "5. 删除文件名以‘副本’结尾的文件\n"
+            "3. 文件名标记管理（添加/移除标记、删除副本等）\n"
+            "4. 网页媒体嗅探下载（含 m3u8 合并、B 站音视频合流）\n"
+            "5. 图片批量下载（CSV/TXT 链接列表）\n"
             "6. 打开可视化界面\n"
             "0. 退出\n"
             "进入工具后，可随时输入 0 返回主菜单。"

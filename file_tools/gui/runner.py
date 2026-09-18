@@ -38,26 +38,30 @@ class TaskRunner:
         self._writer = _QueueWriter(self._log_queue)
         self.busy = False
 
-    def submit(self, title: str, worker) -> bool:
-        """提交任务；已有任务在执行时返回 False。"""
+    def submit(self, title: str, worker, on_done=None) -> bool:
+        """提交任务；已有任务在执行时返回 False。
+
+        on_done(message, succeeded) 在任务结束后由主线程调用，
+        用于视图刷新嗅探结果等收尾操作。
+        """
         if self.busy:
             return False
         self.busy = True
         self._log_queue.put(f"\n===== {title} =====\n")
-        threading.Thread(target=self._run, args=(worker,), daemon=True).start()
+        threading.Thread(target=self._run, args=(worker, on_done), daemon=True).start()
         return True
 
-    def _run(self, worker) -> None:
+    def _run(self, worker, on_done) -> None:
         try:
             with redirect_stdout(self._writer), redirect_stderr(self._writer):
                 message = worker()
         except EXPECTED_ERRORS as exc:
-            self._result_queue.put((f"错误: {exc}", False))
+            self._result_queue.put((f"错误: {exc}", False, on_done))
         except Exception:
             self._log_queue.put(traceback.format_exc())
-            self._result_queue.put(("发生意外错误，详见运行日志。", False))
+            self._result_queue.put(("发生意外错误，详见运行日志。", False, on_done))
         else:
-            self._result_queue.put((message, True))
+            self._result_queue.put((message, True, on_done))
 
     def poll(self):
         """由主线程周期调用：刷新日志并返回 (message, succeeded) 或 None。"""
