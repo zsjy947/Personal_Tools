@@ -1,6 +1,7 @@
 """使用 ffmpeg 将真实内容为视频的文件无损封装为 MP4。"""
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -8,16 +9,33 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def run_hidden(command: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """执行外部命令且在 Windows 上不弹出控制台窗口（ffmpeg 等已内置，无需外部终端）。"""
+    if sys.platform == "win32":
+        kwargs.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
+    return subprocess.run(command, **kwargs)
+
+
 def find_ffmpeg() -> str | None:
-    """查找 ffmpeg：优先 PATH，打包成 exe 后也支持放在程序同目录。"""
-    found = shutil.which("ffmpeg")
-    if found:
-        return found
+    """查找可用 ffmpeg，保证打包成 exe 后功能不出域。
+
+    顺序：环境变量 FILE_TOOLS_FFMPEG → exe 同目录 → 内置 imageio-ffmpeg
+    （随 exe 打包）→ 系统 PATH。
+    """
+    override = os.environ.get("FILE_TOOLS_FFMPEG", "").strip()
+    if override and Path(override).is_file():
+        return override
     if getattr(sys, "frozen", False):
         candidate = Path(sys.executable).parent / "ffmpeg.exe"
         if candidate.is_file():
             return str(candidate)
-    return None
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:  # noqa: BLE001 - 未安装 imageio-ffmpeg 时回退后续查找
+        pass
+    return shutil.which("ffmpeg")
 
 
 @dataclass
@@ -96,7 +114,7 @@ def convert_file(
         "-y" if overwrite else "-n",
         str(output),
     ]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    result = run_hidden(command, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         output.unlink(missing_ok=True)
         detail = result.stderr.strip().splitlines()
@@ -126,7 +144,10 @@ def convert_media(
         return summary
     ffmpeg = find_ffmpeg()
     if not dry_run and ffmpeg is None:
-        raise RuntimeError("未找到 ffmpeg，请安装后将其加入 PATH，或放到程序同目录")
+        raise RuntimeError(
+            "未找到 ffmpeg：请安装依赖 pip install imageio-ffmpeg，"
+            "或设置环境变量 FILE_TOOLS_FFMPEG 指向 ffmpeg 可执行文件"
+        )
 
     for path in files:
         result = convert_file(

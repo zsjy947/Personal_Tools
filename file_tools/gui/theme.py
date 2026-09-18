@@ -10,7 +10,7 @@ import tkinter.font as tkfont
 from tkinter import ttk
 
 APP_NAME = "文件处理工具"
-APP_VERSION = "2.0"
+APP_VERSION = "2.1"
 
 COLORS = {
     "bg": "#eef1f5",

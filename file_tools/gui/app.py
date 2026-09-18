@@ -245,8 +245,8 @@ class App:
     def register_run_button(self, button: ttk.Button) -> None:
         self._run_buttons.append(button)
 
-    def submit(self, title: str, button: ttk.Button, worker) -> None:
-        if not self.runner.submit(title, worker):
+    def submit(self, title: str, button: ttk.Button, worker, on_done=None) -> None:
+        if not self.runner.submit(title, worker, on_done=on_done):
             messagebox.showinfo("提示", "已有任务在执行，请等待其完成。")
             return
         for run_button in self._run_buttons:
@@ -261,7 +261,7 @@ class App:
             self._finish_task(*result)
         self.root.after(POLL_INTERVAL_MS, self._poll)
 
-    def _finish_task(self, message: str, succeeded: bool) -> None:
+    def _finish_task(self, message: str, succeeded: bool, on_done=None) -> None:
         for run_button in self._run_buttons:
             run_button.state(["!disabled"])
         self._progress.stop()
@@ -274,6 +274,8 @@ class App:
         else:
             self._set_status(COLORS["status_fail"], summary or "执行失败")
             messagebox.showerror("执行失败", message)
+        if on_done is not None:
+            on_done(message, succeeded)
 
     def _set_status(self, color: str, text: str) -> None:
         self._status_dot.config(fg=color)
@@ -337,7 +339,11 @@ def main() -> int:
     enable_dpi_awareness()
     _ensure_streams()
     root = tk.Tk()
+    # 窗口保持隐藏直到界面构建与居中定位完成，再按最终尺寸一次性显示，
+    # 避免启动时先出现小窗口再放大导致的闪烁。
+    root.withdraw()
     setup_theme(root)
     App(root)
+    root.deiconify()
     root.mainloop()
     return 0
