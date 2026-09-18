@@ -194,24 +194,32 @@ def _test_media_grab(workdir: Path) -> None:
             assert summary.downloaded == 1 and decrypted.exists(), "AES-128 m3u8 下载失败"
             assert decrypted.read_bytes() == plaintext[0], "AES-128 解密结果不一致"
 
-        # 预览代理：m3u8 重写为本地地址、分段可回源播放
-        import requests as http_client
+        # 软件内预览：本地生成样例视频后走 HTTP，用内置 ffmpeg 抽帧
+        from .core.media_to_mp4 import find_ffmpeg, run_hidden
 
-        from .core.media_grab import build_preview_html, sniff_media, start_preview_server
+        ffmpeg = find_ffmpeg()
+        sample = site / "sample.mp4"
+        if ffmpeg is not None:
+            run_hidden(
+                [
+                    ffmpeg, "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i", "testsrc=duration=2:size=160x120:rate=10",
+                    "-c:v", "mpeg4", "-q:v", "5", "-y", str(sample),
+                ],
+                capture_output=True, text=True, timeout=120, check=False,
+            )
+        if sample.exists():
+            from .core.media_grab import MediaResource, capture_preview_frames
 
-        resources = sniff_media(f"{base}/index.html")
-        _server, preview_base = start_preview_server(resources)
-        try:
-            playlist = http_client.get(f"{preview_base}/i/0", timeout=10)
-            assert "mpegurl" in playlist.headers.get("Content-Type", ""), "预览 m3u8 类型不符"
-            assert "/u/" in playlist.text, "m3u8 未重写为本地代理地址"
-            seg_token = playlist.text.splitlines()[4].rsplit("/u/", 1)[1]
-            segment = http_client.get(f"{preview_base}/u/{seg_token}", timeout=10)
-            assert segment.content == plaintext[0], "预览代理分段内容不符"
-            html = build_preview_html(preview_base, resources, [0, 1])
-            assert "hls.js" in html and "<video" in html, "预览页生成不符"
-        finally:
-            _server.shutdown()
+            resource = MediaResource(url=f"{base}/sample.mp4", suffix=".mp4", kind="media")
+            info, duration, frames = capture_preview_frames(
+                resource, count=2, workdir=workdir / "prev", tag="t"
+            )
+            assert duration and abs(duration - 2.0) < 1.0, f"时长解析不符: {duration}"
+            assert len(frames) == 2 and all(
+                p.exists() and p.stat().st_size > 0 for p in frames
+            ), "预览抽帧失败"
+            assert "视频" in info, f"流信息不符: {info}"
     finally:
         server.shutdown()
 

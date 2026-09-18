@@ -30,6 +30,8 @@ class MediaView(ToolView):
         body = ttk.Frame(self.frame, style="Card.TFrame")
         body.pack(fill="both", expand=True, padx=scale(20), pady=(scale(10), scale(18)))
         body.columnconfigure(1, weight=1)
+        # 标签列定宽：切换单文件/目录时标签文字变化不引起输入框左右移动
+        body.columnconfigure(0, minsize=scale(96))
 
         row = 0
         form_label(body, row, "处理对象")

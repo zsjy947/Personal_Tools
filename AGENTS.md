@@ -38,8 +38,8 @@
 - 内置 bilibili 适配：页面 `__INITIAL_STATE__` 取 bvid/cid/title，调 `x/player/playurl`（无需 wbi）拿 DASH 流，产出 `dash-video`/`dash-audio` 资源（带清晰度标签），下载主 CDN 失败自动换 `backupUrl`；选中视频+音频后用内置 ffmpeg 合流为以视频标题命名的 MP4。
 - m3u8：主播放列表自动选最高带宽，分段并发下载合并；AES-128 分段（`EXT-X-KEY`）依赖 `pycryptodome`/`cryptography`（懒导入）。
 - 资源统一为 `MediaResource`（url/suffix/kind/label/size/title/headers/fallback_urls）；`sniff_media()` 嗅探（`probe=True` 时并发 HEAD 探测体积，上限 `PROBE_LIMIT`）、`download_resources()` 下载选中资源（GUI 用）、`grab_media()` 保留序号流程（CLI/菜单用，先 `--list` 看明细再 `--pick`）。
-- 全链路支持代理（GUI「代理」框 / CLI `--proxy`，嗅探与下载共用）；连接被拒时 `_fetch_page()` 自动走 curl_cffi 浏览器指纹回退（懒导入），仍失败则抛出带代理提示的错误。
-- 预览：`start_preview_server()` 本地代理服务器（`/i/<序号>` 直接代理资源、`/u/<token>` 代理 m3u8 重写后的分段/密钥地址）+ `open_preview()` 生成预览页用浏览器内嵌播放（m3u8 走 hls.js），不触发浏览器下载。
+- 全链路支持代理（GUI「代理」框 / CLI `--proxy`，嗅探与下载共用）；连接被拒时 `_fetch_page()` 依次自动回退：curl_cffi 浏览器指纹 → 系统代理（注册表）→ 常见本地端口（`COMMON_PROXY_PORTS`），成功的探测代理记入 `_detected_proxy` 供下载复用（`_effective_proxy`），全部失败抛出带尝试明细的错误。
+- 预览在软件内完成：`capture_preview_frames()` 用内置 ffmpeg 对选中资源抽帧（自动带 Referer/UA 头，`-rw_timeout` 限时；音频流只解析流信息），`fetch_media_bytes()` 供图片直显；`gui/preview.py` 的 `PreviewWindow` 后台线程取帧、PIL 缩放展示（点击缩略图放大），不打开浏览器。
 - 独立入口：`python -m file_tools.core.media_grab URL [-o OUTPUT] [--list] [--probe] [--pick N ...] [--all] [--no-mp4] [--referer URL] [--proxy URL]`。
 
 ### `file_tools/core/suffix_manager.py`
@@ -66,7 +66,7 @@
 
 ### `file_tools/selftest.py` 与 `build_exe.py`
 
-- `python -m file_tools.selftest`（或 `FileTools.exe --selftest`）在当前环境冒烟测试五项核心工具（media_grab 用本地 HTTP 服务器测试嗅探/合并/AES 解密；download_images 用本地服务器测试下载，均不依赖外网），全部通过退出码 0。
+- `python -m file_tools.selftest`（或 `FileTools.exe --selftest`）在当前环境冒烟测试五项核心工具（media_grab 用本地 HTTP 服务器测试嗅探/合并/AES 解密/ffmpeg 抽帧预览；download_images 用本地服务器测试下载，均不依赖外网），全部通过退出码 0。
 - `python build_exe.py` 用 PyInstaller 打包 GUI 为 `dist/FileTools/FileTools.exe`（目录模式，`--onefile` 为单文件）；`--collect-all imageio_ffmpeg` 把 ffmpeg 打进产物；构建前需 `pip install pyinstaller`。
 
 ## 环境与分支
