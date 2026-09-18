@@ -1,6 +1,7 @@
 # 个人 Python 工具集
 
-项目由三个相互独立的部分组成：本地文件处理工具集、图片下载 CLI 和上海地铁票价查询。
+主分支仅保留本地文件处理工具集 `file_tools/`；已弃置的功能（上海地铁票价查询等）
+归档在 `废弃` 分支，需要时可随时检出，不在主分支维护。
 
 ## 文件处理工具集
 
@@ -14,16 +15,16 @@ python -m file_tools
 
 1. 图像混淆/解混淆
 2. 伪装媒体文件转 MP4
-3. 添加 `.1` 后缀
-4. 移除 `.1` 后缀
-5. 删除文件名以“副本”结尾的文件
+3. 文件名标记管理（添加/移除标记、删除副本等）
+4. 网页媒体嗅探下载（含 m3u8 合并、B 站音视频合流）
+5. 图片批量下载（CSV/TXT 链接列表）
 6. 打开可视化界面
 
 每项工具也可以独立使用命令行参数运行，核心模块位于 `file_tools/core/`。
 
 ### 可视化界面
 
-图形界面为深色侧边栏 + 卡片表单布局，已做高 DPI 适配（高分屏不模糊），路径一律通过资源管理器对话框选择，执行过程与结果汇总显示在底部日志区。三种启动方式：
+图形界面为深色侧边栏 + 卡片表单布局，已做高 DPI 适配（高分屏不模糊），路径一律通过资源管理器对话框选择，执行过程与结果汇总显示在底部日志区。窗口在完成构建与定位后一次性显示，启动无闪烁。三种启动方式：
 
 ```powershell
 # 1. 双击打包产物（推荐，见下文构建方法）
@@ -48,8 +49,10 @@ python build_exe.py --onefile   # 单文件模式：dist/FileTools.exe，便于�
 ```
 
 - 产物自带 Python 与全部依赖（含 numpy/numba/Pillow），体积约 150 MB。
-- 可用 `FileTools.exe --selftest` 验证打包产物内四项核心工具是否正常。
-- 媒体转 MP4 仍需 ffmpeg：加入 `PATH`，或把 `ffmpeg.exe` 放到 exe 同目录。
+- ffmpeg 通过 `imageio-ffmpeg` 一并打包进 exe：媒体转 MP4、m3u8 封装、B 站音视频
+  合流全部内置执行，不依赖系统安装，也不会弹出外部命令行窗口；如需替换版本，
+  把 `ffmpeg.exe` 放到 exe 同目录即可。
+- 可用 `FileTools.exe --selftest` 验证打包产物内核心工具是否正常。
 
 ### 图像混淆/解混淆
 
@@ -89,68 +92,78 @@ python -m file_tools.core.media_to_mp4 TARGET --suffix jpeg woff2 ts
 python -m file_tools.core.media_to_mp4 TARGET --suffix jpeg,wOFF2,ts --recursive --dry-run
 ```
 
-可选参数包括 `--output-dir`、`--overwrite`、`--recursive` 和 `--dry-run`。实际转换需要安装 [ffmpeg](https://ffmpeg.org/) 并将其加入 `PATH`。
+可选参数包括 `--output-dir`、`--overwrite`、`--recursive` 和 `--dry-run`。ffmpeg 已随依赖内置（`imageio-ffmpeg`），无需系统安装；调用过程隐藏控制台窗口。也可用环境变量 `FILE_TOOLS_FFMPEG` 指定自定义 ffmpeg。
 
-### `.1` 后缀管理
+### 网页媒体嗅探下载
 
-```powershell
-python -m file_tools.core.dot1_suffix add TARGET
-python -m file_tools.core.dot1_suffix remove TARGET --recursive --dry-run
-```
+参考猫抓插件的识别方式：媒体后缀表对齐猫抓可识别范围（视频/音频/直播清单共 30 余种），同时扫描标签属性（`src`/`href`/`data-*`）、JSON 字段（`url`/`source`/`file` 等）与页面中的裸 URL，JSON 转义自动还原，相对地址自动补全。
 
-- 默认只处理目标目录的直接文件。
-- `--recursive` 递归处理子目录。
-- `--dry-run` 只预览，不重命名。
-- 添加时跳过已经以 `.1` 结尾的文件，目标名称冲突时也会跳过。
-
-### 删除“副本”文件
-
-递归匹配文件名（不含扩展名）以“副本”结尾的文件。默认仅预览，必须使用 `--execute` 才会实际删除：
+- 可视化界面中先「嗅探资源」得到列表（类型/清晰度/大小/格式/地址），支持勾选、
+  全选、浏览器预览、复制链接，再「下载选中」。
+- 内置 bilibili 站点适配：解析页面 `__INITIAL_STATE__` 后调用 playurl 接口获取
+  DASH 音视频流，勾选视频+音频后自动用内置 ffmpeg 合流为单个 MP4（以视频标题命名）；
+  主 CDN 失败自动切换备用 CDN。
+- m3u8（HLS）自动解析分段列表，并发下载合并，支持主播放列表选最高画质与
+  AES-128 加密分段（依赖 `pycryptodome`）。
 
 ```powershell
-python -m file_tools.core.delete_copy_files TARGET
-python -m file_tools.core.delete_copy_files TARGET --execute
+# 嗅探并列出资源明细（类型/说明/大小/地址）
+python -m file_tools.core.media_grab https://www.bilibili.com/video/BVxxxxxxxx --list --probe
+
+# 先 --list 查看，再按序号下载（视频+音频一起选会自动合流 MP4）
+python -m file_tools.core.media_grab https://www.bilibili.com/video/BVxxxxxxxx --pick 1 5
+
+# 直接给 m3u8 地址
+python -m file_tools.core.media_grab https://cdn.example.com/video.m3u8 --no-mp4
 ```
 
-## 图片下载 CLI
+- 默认识别的后缀覆盖猫抓常见类型（`mp4 m4s mkv webm flv ts m3u8 mpd mp3 flac …`），可用 `--suffix` 调整。
+- `--output` 指定输出目录（默认 `media_downloads/`），`--overwrite` 覆盖已有文件，`--referer` 处理防盗链。
 
-`download_images.py` 是独立工具，不属于 `file_tools` 菜单。CSV 每行第一列应为一个图片 URL：
+### 文件名标记管理
+
+合并原「添加/移除 .1 后缀」与「删除副本文件」两个工具：标记由用户自定义（如 `.1`、`副本`），
+一次完成添加、移除或删除。
 
 ```powershell
-python download_images.py --input URLS.csv --output OUTPUT_DIR
+# 添加标记：.1 追加到文件名末尾（a.txt -> a.txt.1）
+python -m file_tools.core.suffix_manager add TARGET --marker .1
+
+# 移除标记（与添加互逆，单层）
+python -m file_tools.core.suffix_manager remove TARGET --marker .1 --recursive
+
+# 删除带标记的文件：文字标记匹配主文件名末尾（b副本.txt 匹配“副本”）
+python -m file_tools.core.suffix_manager delete TARGET --marker 副本
 ```
 
-短参数和其他选项：
+- 点开头的标记加在完整文件名末尾，文字标记加在扩展名之前；移除/删除同时兼容两种位置。
+- `--dry-run` 仅预览（GUI 中默认勾选「仅预览」）。
+- 目标名称冲突时跳过；`--recursive` 递归处理子目录。
+
+### 图片批量下载
+
+由原根目录独立脚本改造并入 `file_tools`：输入 CSV（取每行第一列）或 TXT（每行一个 URL）链接列表，并发下载图片。
 
 ```powershell
-python download_images.py -i URLS.csv -o downloaded_images --timeout 30 --delay 0.5
+python -m file_tools.core.download_images -i URLS.csv -o downloaded_images
+python -m file_tools.core.download_images -i urls.txt --concurrency 4 --overwrite
 ```
 
-- `--input` 为必需参数。
-- `--output` 默认是当前目录下的 `downloaded_images/`。
-- 已存在文件会被跳过。
-- 下载采用流式写入，单个 URL 失败不会中断其余任务。
-- 依赖 `requests`。
+- 文件名取自 URL；无扩展名时按响应 `Content-Type` 补全；同名自动追加序号。
+- 已存在文件默认跳过（`--overwrite` 覆盖）；单文件失败自动重试且不中断其余任务。
+- 支持 `#` 注释行与空行；依赖 `requests`。
 
-## 上海地铁票价
+## 归档：废弃分支
 
-`shanghai_metro_fare/` 是独立工具，提供命令行版和自包含网页版：
-
-```powershell
-python shanghai_metro_fare/metro_fare.py
-python shanghai_metro_fare/metro_fare.py 人民广场 陆家嘴
-python shanghai_metro_fare/metro_fare.py --selftest
-```
-
-网页版可直接打开 `shanghai_metro_fare/index.html`。详细说明见 [shanghai_metro_fare/README.md](shanghai_metro_fare/README.md)。
+`git checkout 废弃` 可查看历史功能存档（上海地铁票价工具、根目录版图片下载脚本、
+旧版 `.1` 后缀/删除副本工具等）。该分支仅作存档，不再维护；如需恢复某个功能，
+从该分支检出对应目录即可。
 
 ## 环境要求
 
 - Python 3.10+
-- Python 依赖：`pip install -r requirements.txt`
+- Python 依赖：`pip install -r requirements.txt`（ffmpeg 由 `imageio-ffmpeg` 提供，无需系统安装）
 - 打包 exe：`pip install pyinstaller` 后运行 `python build_exe.py`
-- 媒体转 MP4 功能额外需要系统安装 ffmpeg
-- 上海地铁工具只使用 Python 标准库
 
 ## 目录结构
 
@@ -159,22 +172,21 @@ python shanghai_metro_fare/metro_fare.py --selftest
 ├── file_tools/
 │   ├── __main__.py          # CLI 交互菜单（懒加载核心模块）
 │   ├── selftest.py          # 核心/打包产物自检
-│   ├── core/                # 四项核心工具（可独立 CLI 运行）
+│   ├── core/                # 五项核心工具（可独立 CLI 运行）
 │   │   ├── image_decrypt.py
-│   │   ├── media_to_mp4.py
-│   │   ├── dot1_suffix.py
-│   │   └── delete_copy_files.py
+│   │   ├── media_to_mp4.py  # ffmpeg 内置查找（imageio-ffmpeg → PATH）
+│   │   ├── media_grab.py    # 网页媒体嗅探（猫抓式识别 + B 站 DASH + m3u8）
+│   │   ├── suffix_manager.py# 文件名标记管理（增/删标记、删文件）
+│   │   └── download_images.py
 │   └── gui/                 # tkinter 可视化界面包
 │       ├── __main__.py      # python -m file_tools.gui / PyInstaller 入口
 │       ├── app.py           # 主窗口：侧边栏、内容区、日志、状态栏
 │       ├── theme.py         # DPI 感知、缩放、配色与 ttk 样式
 │       ├── widgets.py       # 通用控件与表单辅助
-│       ├── runner.py        # 后台任务执行器
-│       ├── views/           # 各工具视图
+│       ├── runner.py        # 后台任务执行器（支持完成回调）
+│       ├── views/           # 各工具视图（嗅探页含资源列表/预览/勾选）
 │       └── assets/app.ico   # 应用图标
-├── build_exe.py             # PyInstaller 打包脚本
-├── download_images.py
-├── shanghai_metro_fare/
+├── build_exe.py             # PyInstaller 打包脚本（内置 ffmpeg）
 ├── requirements.txt
 ├── AGENTS.md
 └── README.md
