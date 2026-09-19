@@ -23,7 +23,7 @@ IMAGE_WIDTH = 420
 class PreviewWindow(tk.Toplevel):
     """按资源生成预览卡片：视频显示多个时间点缩略图，图片直接展示。"""
 
-    def __init__(self, master, resources: list, indices: list[int], proxy: str | None = None):
+    def __init__(self, master, resources: list, indices: list[int]):
         super().__init__(master)
         self.title("媒体预览")
         self.geometry(f"{scale(900)}x{scale(640)}")
@@ -31,7 +31,6 @@ class PreviewWindow(tk.Toplevel):
         self.transient(master)
 
         self._resources = resources
-        self._proxy = proxy
         self._photos: list[ImageTk.PhotoImage] = []
         self._queue: queue.Queue = queue.Queue()
         self._pending = len(indices)
@@ -127,13 +126,11 @@ class PreviewWindow(tk.Toplevel):
             elif resource.kind == "dash-audio" or resource.suffix in AUDIO_SUFFIXES:
                 info, _duration, _frames = capture_preview_frames(
                     resource, count=0, workdir=self._workdir, tag=f"s{slot}",
-                    proxy=self._proxy,
                 )
                 self._queue.put((slot, "audio", info))
             else:
                 info, _duration, frames = capture_preview_frames(
                     resource, count=3, workdir=self._workdir, tag=f"s{slot}",
-                    proxy=self._proxy,
                 )
                 self._queue.put((slot, "frames", info, frames))
         except Exception as exc:  # noqa: BLE001 - 预览失败在窗口内呈现

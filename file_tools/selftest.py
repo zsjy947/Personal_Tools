@@ -237,6 +237,130 @@ def _test_fanqie_novel(workdir: Path) -> None:
     assert re_search_id("十日终焉") is None, "书名不应被当作 ID"
 
 
+def _test_browser_sniff(workdir: Path) -> None:
+    """离线测试浏览器嗅探的纯逻辑：媒体识别、CDP 事件消费、父域与播放列表改写。"""
+    from .core.browser_sniff import (
+        MediaRecorder,
+        find_browser_exe,
+        is_media_url,
+        url_suffix,
+    )
+    from .core.media_grab import _parent_host, _rewrite_playlist, parse_m3u8
+
+    # 浏览器探测只查找、不启动
+    exe = find_browser_exe()
+    assert exe is None or exe.is_file(), "find_browser_exe 应返回可执行文件或 None"
+
+    assert is_media_url("https://cdn.example.com/a/b.m3u8?token=1"), "后缀含查询参数应识别为媒体"
+    assert is_media_url("https://cdn.example.com/manifest", mime="application/vnd.apple.mpegurl")
+    assert not is_media_url("https://cdn.example.com/page.html"), "html 不应是媒体"
+    assert not is_media_url("blob:https://example.com/uuid"), "blob: 地址应跳过"
+    assert url_suffix("https://x.com/a/b.MP4?k=1") == ".mp4", "后缀应忽略大小写与查询参数"
+
+    recorder = MediaRecorder()
+    recorder.feed_request(
+        "https://cdn.example.com/v.m3u8", resource_type="Manifest",
+        referer="https://page.example.com/", headers={"Referer": "https://page.example.com/"},
+    )
+    recorder.feed_request("https://cdn.example.com/app.js", resource_type="Script")
+    recorder.feed_response(
+        "https://cdn.example.com/v.m3u8", status=200,
+        mime="application/vnd.apple.mpegurl", size=1024,
+    )
+    recorder.feed_request("https://cdn.example.com/seg0.ts", resource_type="Media")
+    ordered = recorder.ordered()
+    assert [r.url for r in ordered] == [
+        "https://cdn.example.com/v.m3u8", "https://cdn.example.com/seg0.ts",
+    ], "事件消费后的媒体列表不符"
+    assert ordered[0].kind == "m3u8" and ordered[0].status == 200 and ordered[0].size == 1024
+    assert ordered[0].referer == "https://page.example.com/"
+
+    # SNI 精简的父域计算
+    assert _parent_host("z6v2p9a8.bkcdn.net") == "bkcdn.net", "三级域名父域不符"
+    assert _parent_host("a.b.example.com") == "b.example.com", "多级域名父域不符"
+    assert _parent_host("example.com") is None, "两级域名无父域"
+    assert _parent_host("localhost") is None, "单标签主机无父域"
+
+    # 预览代理的 m3u8 改写：相对/绝对地址与 EXT-X-KEY URI 都改写为本地代理地址
+    text = "\n".join([
+        "#EXTM3U",
+        '#EXT-X-KEY:METHOD=AES-128,URI="key.bin"',
+        "#EXT-X-TARGETDURATION:2",
+        "seg0.ts",
+        "https://other.example.com/x.ts",
+    ])
+    rewritten = _rewrite_playlist(text, "https://cdn.example.com/v/index.m3u8", "https://page/")
+    kind, payload = parse_m3u8(rewritten, "http://127.0.0.1:1/player")
+    assert kind == "media", "改写后仍是媒体播放列表"
+    assert str(payload.key.uri).startswith("http://127.0.0.1:1/media?u="), "KEY URI 未改写为代理地址"
+    assert all(s.startswith("http://127.0.0.1:1/media?u=") for s in payload.segments), "分段地址未改写为代理地址"
+    assert 'URI="key.bin"' not in rewritten, "KEY 相对地址应被改写"
+    assert "\nseg0.ts" not in rewritten, "分段相对地址应被改写"
+
+
+def _test_preview_proxy(workdir: Path) -> None:
+    """离线测试浏览器模式预览代理：本地文件经代理可播放页/媒体端点取回。"""
+    import requests as _requests
+
+    from .core import media_grab as mg
+
+    site = workdir / "prev_site"
+    site.mkdir()
+    payload = b"0123456789abcdef" * 64
+    (site / "video.mp4").write_bytes(payload)
+    (site / "index.m3u8").write_text(
+        "\n".join(["#EXTM3U", "#EXT-X-VERSION:3", "seg0.ts", "#EXT-X-ENDLIST"]),
+        encoding="ascii",
+    )
+    (site / "seg0.ts").write_bytes(b"SEG-DATA")
+    server = _serve_directory(site)
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        proxy = mg._PreviewProxy()
+        transport_ref = proxy.transport
+        resource = mg.MediaResource(
+            url=f"{base}/video.mp4", suffix=".mp4", kind="media",
+            headers={"Referer": f"{base}/"},
+        )
+        player_url = proxy.player_url(resource.url, resource.headers["Referer"], "file")
+        page = _requests.get(player_url, timeout=10)
+        assert page.status_code == 200 and "video" in page.text, "播放页应包含 video 元素"
+
+        media_url = proxy.player_url(resource.url, resource.headers["Referer"], "file").replace(
+            "/player?", "/media?"
+        ).replace("&k=file", "")
+        # 直接取 /media 端点（与播放页等价路径）
+        from urllib.parse import parse_qs, quote, urlparse
+
+        query = parse_qs(urlparse(media_url).query)
+        proxied = (
+            f"{proxy.base_url}/media?u={quote(query['u'][0], safe='')}"
+            f"&r={quote(query['r'][0], safe='')}"
+        )
+        media = _requests.get(proxied, timeout=10)
+        assert media.status_code == 200 and media.content == payload, "代理透传内容不一致"
+
+        # Range 请求透传
+        ranged = _requests.get(proxied, headers={"Range": "bytes=0-3"}, timeout=10)
+        assert ranged.status_code in (200, 206) and ranged.content[:4] == payload[:4], "Range 请求应可用"
+
+        # m3u8 改写
+        playlist = _requests.get(
+            f"{proxy.base_url}/media?u={quote(f'{base}/index.m3u8', safe='')}"
+            f"&r={quote(f'{base}/', safe='')}",
+            timeout=10,
+        )
+        assert playlist.status_code == 200, "m3u8 代理失败"
+        assert "/media?u=" in playlist.text and "\nseg0.ts" not in playlist.text, "m3u8 未改写为代理地址"
+        # hls.js 内置可取
+        hls = _requests.get(f"{proxy.base_url}/hls.js", timeout=10)
+        assert hls.status_code == 200 and len(hls.content) > 100000, "内置 hls.js 应可提供"
+        transport_ref.close()
+        proxy._server.shutdown()
+    finally:
+        server.shutdown()
+
+
 def main() -> int:
     failures = []
     with tempfile.TemporaryDirectory(prefix="file_tools_selftest_") as tmp:
@@ -248,6 +372,8 @@ def main() -> int:
             ("media_grab", _test_media_grab),
             ("download_images", _test_download_images),
             ("fanqie_novel", _test_fanqie_novel),
+            ("browser_sniff", _test_browser_sniff),
+            ("preview_proxy", _test_preview_proxy),
         ):
             try:
                 test(workdir)

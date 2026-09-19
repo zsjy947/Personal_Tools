@@ -1,21 +1,25 @@
-"""网页媒体嗅探下载视图：资源列表 + 预览 + 勾选下载（参考猫抓交互）。"""
+"""网页媒体嗅探下载视图：双模式嗅探 + 资源列表 + 预览 + 勾选下载（参考猫抓交互）。"""
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from ..theme import COLORS, FONTS, scale
-from ..widgets import Card, check_row, form_label, path_row
+from ..widgets import Card, check_row, form_label, path_row, radio_row
 from .base import ToolView
 
 CHECKED, UNCHECKED = "☑", "☐"
+
+MODE_DIRECT = "direct"
+MODE_BROWSER = "browser"
 
 
 class GrabView(ToolView):
     ID = "grab"
     TITLE = "网页媒体下载"
     SUBTITLE = (
-        "嗅探网页中的视频/音频资源（对齐猫抓识别范围，支持 B 站 DASH 音视频合流），"
-        "先查看列表再勾选下载；拒绝直连的站点可填代理。"
+        "嗅探网页中的视频/音频资源（对齐猫抓识别范围，支持 B 站 DASH 音视频合流）。"
+        "直连模式直接请求页面；浏览器模式打开本机浏览器播放视频并捕获地址，"
+        "适合被网络阻断或反爬的站点。"
     )
     RUN_TEXT = "下载选中"
 
@@ -38,15 +42,18 @@ class GrabView(ToolView):
         url_box.grid(row=row, column=1, sticky="ew", pady=scale(7))
 
         row += 1
-        form_label(body, row, "代理")
-        self.proxy = tk.StringVar()
-        entry_proxy = ttk.Entry(body, textvariable=self.proxy)
-        entry_proxy.grid(row=row, column=1, sticky="ew", pady=scale(7))
-        ttk.Label(
+        form_label(body, row, "嗅探模式")
+        self.mode = tk.StringVar(value=MODE_DIRECT)
+        radio_row(
+            body, row, self.mode,
+            [("直连模式（默认）", MODE_DIRECT), ("浏览器模式", MODE_BROWSER)],
+        )
+        self.mode_hint = ttk.Label(
             body,
-            text="可选，如 http://127.0.0.1:7890",
+            text="直连失败时可在提示后改用浏览器模式",
             style="Hint.TLabel",
-        ).grid(row=row, column=2, sticky="w")
+        )
+        self.mode_hint.grid(row=row, column=2, sticky="w")
 
         row += 1
         form_label(body, row, "输出目录")
@@ -70,9 +77,10 @@ class GrabView(ToolView):
         ttk.Label(header, text="嗅探结果", style="Section.TLabel").pack(side="left")
         self.result_hint = ttk.Label(header, text="尚未嗅探", style="Hint.TLabel")
         self.result_hint.pack(side="left", padx=(scale(10), 0))
-        ttk.Label(
-            header, text="点击“选择”列勾选，双击行软件内预览", style="Hint.TLabel"
-        ).pack(side="right")
+        self.result_hint_right = ttk.Label(
+            header, text="点击“选择”列勾选，双击行预览", style="Hint.TLabel"
+        )
+        self.result_hint_right.pack(side="right")
 
         row += 1
         table = ttk.Frame(body, style="Card.TFrame")
@@ -159,6 +167,8 @@ class GrabView(ToolView):
         self.app.register_run_button(self.run_button)
         self._resources: list = []
         self._checked: set[str] = set()
+        self._sniffed: list = []
+        self._sniff_mode: str = MODE_DIRECT
 
     # -------- 列表交互 --------
 
@@ -206,12 +216,23 @@ class GrabView(ToolView):
         if not indices:
             messagebox.showinfo("提示", "请先勾选或双击要预览的资源。")
             return
+        if self._sniff_mode == MODE_BROWSER:
+            # 浏览器模式的资源多来自被阻断站点：经本地代理在系统浏览器中播放
+            from ...core.media_grab import open_external_preview
+
+            try:
+                for index in indices[:5]:
+                    url = open_external_preview(self._resources[index])
+                messagebox.showinfo(
+                    "预览", f"已在系统浏览器中打开 {min(len(indices), 5)} 个资源的预览页。"
+                )
+            except Exception as exc:  # noqa: BLE001 - 预览失败直接反馈
+                messagebox.showerror("预览失败", str(exc))
+            return
         from ..preview import PreviewWindow
 
         try:
-            PreviewWindow(
-                self.frame, self._resources, indices[:10], proxy=self._proxy_value()
-            )
+            PreviewWindow(self.frame, self._resources, indices[:10])
         except Exception as exc:  # noqa: BLE001 - 预览窗口创建失败直接反馈
             messagebox.showerror("预览失败", str(exc))
 
@@ -233,10 +254,6 @@ class GrabView(ToolView):
             return self.tree.index(iid)
         except tk.TclError:
             return None
-
-    def _proxy_value(self) -> str | None:
-        value = self.proxy.get().strip().strip('"')
-        return value or None
 
     def _fill_tree(self, resources: list) -> None:
         self.tree.delete(*self.tree.get_children())
@@ -280,21 +297,41 @@ class GrabView(ToolView):
         if not url:
             messagebox.showwarning("缺少参数", "请先输入网页或媒体地址。")
             return
-        proxy = self._proxy_value()
+        mode = self.mode.get()
+        self._sniff_mode = mode
 
         def worker() -> str:
+            if mode == MODE_BROWSER:
+                from ...core.media_grab import sniff_media_browser
+
+                resources = sniff_media_browser(url)
+                self._sniffed = resources
+                if not resources:
+                    return (
+                        "浏览器嗅探结束，未捕获到媒体资源："
+                        "请确认已在浏览器中播放视频后重试。"
+                    )
+                return f"浏览器嗅探完成：共 {len(resources)} 个资源，请在列表中勾选后下载。"
+
             from ...core.media_grab import sniff_media
 
-            resources = sniff_media(url, probe=True, proxy=proxy)
+            resources = sniff_media(url, probe=True)
             print(f"嗅探到 {len(resources)} 个媒体资源")
             self._sniffed = resources
             if not resources:
-                return "未嗅探到媒体资源：可尝试直连媒体/m3u8 地址，或检查页面是否需要登录。"
+                return (
+                    "未嗅探到媒体资源：可尝试直连媒体/m3u8 地址，"
+                    "或检查页面是否需要登录；也可改用「浏览器模式」嗅探。"
+                )
             return f"嗅探完成：共 {len(resources)} 个资源，请在列表中勾选后下载。"
 
         def on_done(message: str, succeeded: bool) -> None:
             if succeeded:
-                self._fill_tree(getattr(self, "_sniffed", []))
+                self._fill_tree(self._sniffed)
+                self.result_hint_right.config(
+                    text="双击行预览（当前模式在浏览器中播放）"
+                    if mode == MODE_BROWSER else "双击行软件内预览"
+                )
 
         self.app.submit("嗅探媒体资源", self.sniff_button, worker, on_done=on_done)
 
@@ -312,12 +349,11 @@ class GrabView(ToolView):
             return
         output_dir = self.output_dir.get().strip().strip('"') or "media_downloads"
         to_mp4 = self.to_mp4.get()
-        proxy = self._proxy_value()
 
         def worker() -> str:
             from ...core.media_grab import download_resources
 
-            summary = download_resources(selected, output_dir, to_mp4=to_mp4, proxy=proxy)
+            summary = download_resources(selected, output_dir, to_mp4=to_mp4)
             return (
                 f"下载完成：下载 {summary.downloaded}，合流 {summary.merged}，"
                 f"跳过 {summary.skipped}，失败 {summary.failed}，详见运行日志。"

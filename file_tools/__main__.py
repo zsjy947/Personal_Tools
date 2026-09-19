@@ -133,8 +133,14 @@ def run_media_grab() -> None:
     url = ask_value("输入网页或直接的媒体/m3u8 地址").strip('"')
     output_value = input("输出目录（留空使用 media_downloads）: ").strip().strip('"')
     output = output_value or "media_downloads"
-    proxy = input("代理地址（留空直连，如 http://127.0.0.1:7890）: ").strip().strip('"') or None
-    grab_media(url, output, list_only=True, probe=True, proxy=proxy)
+    print("嗅探模式: 1 直连（默认，站点可正常访问时用） / 2 浏览器（打开浏览器播放视频后捕获，站点被阻断/反爬时用）")
+    while True:
+        mode_choice = ask_value("选择模式")
+        if mode_choice in {"1", "2", ""}:
+            break
+        print("错误: 模式必须是 1 或 2。")
+    mode = "browser" if mode_choice == "2" else "direct"
+    grab_media(url, output, mode=mode, list_only=True, probe=mode == "direct")
     if not ask_yes_no("是否下载部分资源（选否结束）"):
         return
 
@@ -143,12 +149,12 @@ def run_media_grab() -> None:
     grab_media(
         url,
         output,
+        mode=mode,
         picks=picks,
         grab_all=not raw,
         concurrency=8,
         to_mp4=ask_yes_no("视频流自动封装 MP4（选否保留原始流）", default=True),
         overwrite=ask_yes_no("覆盖已有输出文件"),
-        proxy=proxy,
     )
 
 
