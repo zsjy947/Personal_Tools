@@ -207,12 +207,9 @@ def _fetch_via_curl(url: str, timeout: float, *, referer: str | None = None) -> 
 
 
 def _direct_error_hint(exc: Exception) -> str:
-    detail = str(exc).strip() or exc.__class__.__name__
-    return (
-        f"直连访问失败：{detail}。已尝试直连与浏览器指纹回退。"
-        "该站点可能被网络阻断或反爬——可切换到「浏览器模式」重新嗅探"
-        "（打开浏览器访问页面后捕获视频地址）。"
-    )
+    # 技术细节只进运行日志；给用户的提示保持一句话可执行
+    print(f"直连访问失败: {exc}")
+    return "直连访问失败，请切换到「浏览器模式」重新嗅探。"
 
 
 def _fetch_page(
@@ -318,17 +315,20 @@ def _kind_of(url: str) -> str:
 
 
 def sniff_media_browser(
-    url: str, *, max_seconds: float = 900, referer: str | None = None
+    url: str, *, max_seconds: float = 900, referer: str | None = None,
+    stop_event: "threading.Event | None" = None,
 ) -> list[MediaResource]:
     """浏览器模式：打开浏览器访问页面，捕获网络层媒体地址（猫抓式）。
 
-    浏览器关闭（或超时）后返回资源列表；失败时直接抛错，不引导回直连模式。
+    stop_event 置位即提前结束（GUI「完成嗅探」按钮）；浏览器关闭或超时
+    也会结束。失败时直接抛错，不引导回直连模式。
     """
     from .browser_sniff import capture_via_browser
 
     captured, page_title, page_url = capture_via_browser(
         url,
         max_seconds=max_seconds,
+        stop_event=stop_event,
         on_status=lambda text: print(text),
         on_capture=lambda record: print(
             f"捕获到: [{record.kind}] "

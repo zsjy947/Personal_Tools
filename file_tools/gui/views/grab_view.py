@@ -1,7 +1,8 @@
 """网页媒体嗅探下载视图：双模式嗅探 + 资源列表 + 预览 + 勾选下载（参考猫抓交互）。"""
 
+import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, ttk
 
 from ..theme import COLORS, FONTS, scale
 from ..widgets import Card, check_row, form_label, path_row, radio_row
@@ -39,6 +40,12 @@ class GrabView(ToolView):
             url_box, text="嗅探资源", style="Accent.TButton", command=self._sniff
         )
         self.sniff_button.pack(side="left", padx=(scale(10), 0))
+        # 仅在浏览器模式嗅探运行期间可用：点一下提前结束捕获并收掉浏览器
+        self.finish_button = ttk.Button(
+            url_box, text="完成嗅探", style="Ghost.TButton", command=self._finish_sniff
+        )
+        self.finish_button.pack(side="left", padx=(scale(8), 0))
+        self.finish_button.state(["disabled"])
         url_box.grid(row=row, column=1, sticky="ew", pady=scale(7))
 
         row += 1
@@ -169,6 +176,7 @@ class GrabView(ToolView):
         self._checked: set[str] = set()
         self._sniffed: list = []
         self._sniff_mode: str = MODE_DIRECT
+        self._sniff_stop: threading.Event | None = None
 
     # -------- 列表交互 --------
 
@@ -214,7 +222,7 @@ class GrabView(ToolView):
     def _preview_items(self, iids: list[str]) -> None:
         indices = [i for i in (self._iid_index(iid) for iid in iids) if i is not None]
         if not indices:
-            messagebox.showinfo("提示", "请先勾选或双击要预览的资源。")
+            self.app.notify("请先勾选或双击要预览的资源。")
             return
         if self._sniff_mode == MODE_BROWSER:
             # 浏览器模式的资源多来自被阻断站点：经本地代理在系统浏览器中播放
@@ -222,19 +230,19 @@ class GrabView(ToolView):
 
             try:
                 for index in indices[:5]:
-                    url = open_external_preview(self._resources[index])
-                messagebox.showinfo(
-                    "预览", f"已在系统浏览器中打开 {min(len(indices), 5)} 个资源的预览页。"
+                    open_external_preview(self._resources[index])
+                self.app.notify(
+                    f"已在系统浏览器中打开 {min(len(indices), 5)} 个资源的预览页。"
                 )
             except Exception as exc:  # noqa: BLE001 - 预览失败直接反馈
-                messagebox.showerror("预览失败", str(exc))
+                self.app.notify(f"预览失败: {exc}", error=True)
             return
         from ..preview import PreviewWindow
 
         try:
             PreviewWindow(self.frame, self._resources, indices[:10])
         except Exception as exc:  # noqa: BLE001 - 预览窗口创建失败直接反馈
-            messagebox.showerror("预览失败", str(exc))
+            self.app.notify(f"预览失败: {exc}", error=True)
 
     def _copy_links(self) -> None:
         links = [
@@ -243,11 +251,11 @@ class GrabView(ToolView):
             if self._iid_index(iid) is not None
         ]
         if not links:
-            messagebox.showinfo("提示", "请先勾选要复制链接的资源。")
+            self.app.notify("请先勾选要复制链接的资源。")
             return
         self.frame.clipboard_clear()
         self.frame.clipboard_append("\n".join(links))
-        messagebox.showinfo("完成", f"已复制 {len(links)} 个链接到剪贴板。")
+        self.app.notify(f"已复制 {len(links)} 个链接到剪贴板。")
 
     def _iid_index(self, iid: str) -> int | None:
         try:
@@ -295,16 +303,18 @@ class GrabView(ToolView):
     def _sniff(self) -> None:
         url = self.url.get().strip().strip('"')
         if not url:
-            messagebox.showwarning("缺少参数", "请先输入网页或媒体地址。")
+            self.app.notify("请先输入网页或媒体地址。")
             return
         mode = self.mode.get()
         self._sniff_mode = mode
+        stop_event = threading.Event()
+        self._sniff_stop = stop_event
 
         def worker() -> str:
             if mode == MODE_BROWSER:
                 from ...core.media_grab import sniff_media_browser
 
-                resources = sniff_media_browser(url)
+                resources = sniff_media_browser(url, stop_event=stop_event)
                 self._sniffed = resources
                 if not resources:
                     return (
@@ -326,6 +336,8 @@ class GrabView(ToolView):
             return f"嗅探完成：共 {len(resources)} 个资源，请在列表中勾选后下载。"
 
         def on_done(message: str, succeeded: bool) -> None:
+            self._sniff_stop = None
+            self.finish_button.state(["disabled"])
             if succeeded:
                 self._fill_tree(self._sniffed)
                 self.result_hint_right.config(
@@ -333,11 +345,21 @@ class GrabView(ToolView):
                     if mode == MODE_BROWSER else "双击行软件内预览"
                 )
 
-        self.app.submit("嗅探媒体资源", self.sniff_button, worker, on_done=on_done)
+        started = self.app.submit("嗅探媒体资源", self.sniff_button, worker, on_done=on_done)
+        if not started:
+            self._sniff_stop = None
+        elif mode == MODE_BROWSER:
+            self.finish_button.state(["!disabled"])
+
+    def _finish_sniff(self) -> None:
+        """提前结束浏览器嗅探：置位停止事件，浏览器窗口由捕获线程自动回收。"""
+        if self._sniff_stop is not None and not self._sniff_stop.is_set():
+            self._sniff_stop.set()
+            self.app.notify("正在结束浏览器嗅探…")
 
     def _run(self) -> None:
         if not self._resources:
-            messagebox.showwarning("没有资源", "请先嗅探出资源列表，再勾选下载。")
+            self.app.notify("请先嗅探出资源列表，再勾选下载。")
             return
         selected = [
             self._resources[self._iid_index(iid)]
@@ -345,7 +367,7 @@ class GrabView(ToolView):
             if self._iid_index(iid) is not None
         ]
         if not selected:
-            messagebox.showwarning("未选择", "请先在列表中勾选要下载的资源。")
+            self.app.notify("请先在列表中勾选要下载的资源。")
             return
         output_dir = self.output_dir.get().strip().strip('"') or "media_downloads"
         to_mp4 = self.to_mp4.get()

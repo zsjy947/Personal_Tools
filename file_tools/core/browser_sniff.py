@@ -118,6 +118,9 @@ class CDPClient:
         self.ws = websocket.create_connection(
             ws_url, timeout=timeout, suppress_origin=True
         )
+        # 握手后切换为阻塞读：读线程只在连接关闭时退出，
+        # 页面静默超过 socket 超时也不会误判断连
+        self.ws.settimeout(None)
         self.seq = 0
         self._send_lock = threading.Lock()
         self._lock = threading.Lock()
@@ -200,6 +203,13 @@ class CDPClient:
 
     def close(self) -> None:
         try:
+            # 先断底层 socket 解除阻塞中的读线程，再做协议级关闭
+            sock = getattr(self.ws, "sock", None)
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
             self.ws.close()
         except Exception:  # noqa: BLE001 - 关闭失败无需处理
             pass
@@ -263,9 +273,10 @@ class BrowserSession:
             stderr=subprocess.DEVNULL,
             creationflags=creationflags,
         )
-        if not self._wait_debug_port(20):
+        # 浏览器冷启动（首次建配置、杀软扫描）可能明显超过半分钟，给足等待
+        if not self._wait_debug_port(90):
             self.close()
-            raise RuntimeError("浏览器调试端口启动超时，浏览器模式不可用。")
+            raise RuntimeError("启动浏览器超时（等待 90 秒），请重试浏览器模式。")
 
     def _wait_debug_port(self, timeout: float) -> bool:
         deadline = time.time() + timeout
@@ -295,7 +306,7 @@ class BrowserSession:
             return []
         return [t for t in targets if t.get("type") == "page"]
 
-    def attach_page(self, url_contains: str = "", timeout: float = 20) -> CDPClient:
+    def attach_page(self, url_contains: str = "", timeout: float = 60) -> CDPClient:
         """连接到页面级调试端点；默认取第一个页面，可用 URL 关键字选择。"""
         deadline = time.time() + timeout
         target = None
@@ -311,7 +322,9 @@ class BrowserSession:
                 break
             time.sleep(0.3)
         if target is None or not target.get("webSocketDebuggerUrl"):
-            raise RuntimeError("未能连接到浏览器页面调试端点。")
+            raise RuntimeError(
+                f"等待 {int(timeout)} 秒仍未连接到浏览器页面，请重试浏览器模式。"
+            )
         self.cdp = CDPClient(target["webSocketDebuggerUrl"])
         return self.cdp
 
@@ -407,13 +420,16 @@ def capture_via_browser(
     on_capture=None,
     on_status=None,
     on_ready=None,
+    stop_event: "threading.Event | None" = None,
 ) -> tuple[list[CapturedMedia], str, str]:
     """打开浏览器访问 url，捕获网络层出现的媒体地址。
 
-    结束条件：用户关闭浏览器（进程退出），或达到 max_seconds。
+    结束条件：stop_event 被置位（GUI「完成嗅探」按钮）、用户关闭浏览器
+    （进程退出），或达到 max_seconds。
     on_ready(session, cdp)：浏览器就绪后的回调（自动化测试注入交互用）。
     返回 (捕获列表, 页面标题, 最终页面地址)。
     """
+    stop = stop_event or threading.Event()
     recorder = MediaRecorder()
     with BrowserSession(url, visible=True) as session:
         cdp = session.attach_page()
@@ -427,13 +443,13 @@ def capture_via_browser(
                 pass
         if on_status:
             on_status(
-                "浏览器已打开：请在浏览器中播放视频；捕获会实时显示，"
-                "关闭浏览器窗口即可结束嗅探返回列表。"
+                "浏览器已打开：请在浏览器中播放视频进行捕获；"
+                "抓够后点「完成嗅探」（或关闭浏览器窗口）结束并返回列表。"
             )
         deadline = time.time() + max_seconds
         announced: set[str] = set()
         last_title_check = 0.0
-        while session.alive() and time.time() < deadline:
+        while session.alive() and time.time() < deadline and not stop.is_set():
             for event in cdp.drain_events():
                 _consume_event(recorder, event)
             for record in recorder.ordered():

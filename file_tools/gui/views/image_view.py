@@ -2,7 +2,7 @@
 
 from pathlib import Path
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, ttk
 
 from ..theme import scale
 from ..widgets import (
@@ -151,25 +151,25 @@ class ImageView(ToolView):
         is_dir = self.input_kind.get() == "dir"
 
         if not input_path:
-            messagebox.showwarning("缺少参数", "请先选择输入路径。")
+            self.app.notify("请先选择输入路径。", error=True)
             return
         if not output_path:
-            messagebox.showwarning("缺少参数", "请先选择输出路径。")
+            self.app.notify("请先选择输出路径。", error=True)
             return
         if not key:
-            messagebox.showwarning("缺少参数", "请输入密钥。")
+            self.app.notify("请输入密钥。", error=True)
             return
         if mode in {"4", "5"}:
             try:
                 numeric_key = float(key)
             except ValueError:
-                messagebox.showwarning("密钥无效", "模式 4 和 5 的密钥必须是 0 到 1 之间的数字。")
+                self.app.notify("模式 4 和 5 的密钥必须是 0 到 1 之间的数字。", error=True)
                 return
             if not 0 < numeric_key < 1:
-                messagebox.showwarning("密钥无效", "模式 4 和 5 的密钥必须大于 0 且小于 1。")
+                self.app.notify("模式 4 和 5 的密钥必须大于 0 且小于 1。", error=True)
                 return
         if is_dir and Path(input_path) == Path(output_path):
-            messagebox.showwarning("参数无效", "批量处理的输出目录不能与输入目录相同。")
+            self.app.notify("批量处理的输出目录不能与输入目录相同。", error=True)
             return
 
         action_name = "混淆" if operation == "encrypt" else "解混淆"

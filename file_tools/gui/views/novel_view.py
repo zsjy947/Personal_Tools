@@ -1,7 +1,7 @@
 """番茄小说搜索下载视图（仅供学习研究，请尊重作者版权）。"""
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, ttk
 
 from ..theme import scale
 from ..widgets import Card, entry_row, form_label, path_row, radio_row, run_button_row
@@ -107,7 +107,7 @@ class NovelView(ToolView):
     def _search(self) -> None:
         keyword = self.keyword.get().strip().strip('"')
         if not keyword:
-            messagebox.showwarning("缺少参数", "请先输入书名或链接。")
+            self.app.notify("请先输入书名或链接。", error=True)
             return
 
         def worker() -> str:
@@ -153,7 +153,7 @@ class NovelView(ToolView):
     def _run(self) -> None:
         keyword = self.keyword.get().strip().strip('"')
         if not keyword:
-            messagebox.showwarning("缺少参数", "请先输入书名、链接或书籍 ID。")
+            self.app.notify("请先输入书名、链接或书籍 ID。", error=True)
             return
         from ...core.fanqie_novel import re_search_id
 
@@ -164,7 +164,7 @@ class NovelView(ToolView):
                 values = self.tree.item(selected[0], "values")
                 book_id = str(values[3])
             else:
-                messagebox.showwarning("未选择", "请先搜索并双击选择一本书，或直接粘贴链接/ID。")
+                self.app.notify("请先搜索并双击选择一本书，或直接粘贴链接/ID。", error=True)
                 return
         output_dir = self.output_dir.get().strip().strip('"') or "novel_downloads"
         fmt = self.fmt.get()
