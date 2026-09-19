@@ -12,7 +12,7 @@ class NovelView(ToolView):
     ID = "novel"
     TITLE = "番茄小说下载"
     SUBTITLE = (
-        "按书名搜索或粘贴书籍 ID/链接，下载为 TXT/EPUB；正文经字体反混淆还原，"
+        "按书名搜索或粘贴书籍 ID/链接，下载为 TXT/EPUB（内置官方 API 后端，正文为明文）；"
         "仅供学习研究，请尊重作者版权。"
     )
     RUN_TEXT = "开始下载"
