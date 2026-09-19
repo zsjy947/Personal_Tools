@@ -34,13 +34,25 @@
 
 ### `file_tools/core/media_grab.py`
 
-- 参考猫抓插件的网页媒体嗅探下载，识别范围对齐猫抓后缀表（`MEDIA_SUFFIXES`，视频/音频/清单 30 余种）；扫描标签属性（`src`/`href`/`data-*`）、JSON 字段（`url`/`source`/`file`）与裸 URL，还原 `\/`、`\u002F` 转义，相对地址经 `urljoin` 补全。
+- 参考猫抓插件的网页媒体嗅探下载，识别范围对齐猫抓后缀表（`MEDIA_SUFFIXES`，视频/音频/清单 30 余种）；直连扫描标签属性（`src`/`href`/`data-*`）、JSON 字段（`url`/`source`/`file`）与裸 URL，还原 `\/`、`\u002F` 转义，相对地址经 `urljoin` 补全。
+- **双嗅探模式**（CLI `--mode {direct,browser}` / GUI 单选；默认直连）：
+  - 直连模式：requests 直接抓页面，失败自动 curl_cffi 浏览器指纹回退；仍失败时报错并提示可改用浏览器模式（不自动切换）。
+  - 浏览器模式：`browser_sniff.py` 启动本机 Chrome/Edge（独立临时配置 + CDP），用户在浏览器里播放视频，工具经 Network 事件捕获媒体地址（含完整请求头），关闭浏览器窗口结束嗅探；失败只报错、不引导回直连。
+- **不提供代理功能**（已整体移除）。下载走多级传输回退 `_TransportChain`（按主机记忆首次成功的方式）：直连 requests → curl_cffi 指纹 → SNI 精简（TLS SNI 用父域、Host 不变，用于被 SNI 阻断的 CDN；证书校验降级会在日志明确提示）→ 浏览器引擎（`BrowserHTTPSession` 页面内 fetch + CDP Fetch 域拦截响应 + IO 流式读出，请求上下文与真实播放器一致）。
 - 内置 bilibili 适配：页面 `__INITIAL_STATE__` 取 bvid/cid/title，调 `x/player/playurl`（无需 wbi）拿 DASH 流，产出 `dash-video`/`dash-audio` 资源（带清晰度标签），下载主 CDN 失败自动换 `backupUrl`；选中视频+音频后用内置 ffmpeg 合流为以视频标题命名的 MP4。
-- m3u8：主播放列表自动选最高带宽，分段并发下载合并；AES-128 分段（`EXT-X-KEY`）依赖 `pycryptodome`/`cryptography`（懒导入）。
-- 资源统一为 `MediaResource`（url/suffix/kind/label/size/title/headers/fallback_urls）；`sniff_media()` 嗅探（`probe=True` 时并发 HEAD 探测体积，上限 `PROBE_LIMIT`）、`download_resources()` 下载选中资源（GUI 用）、`grab_media()` 保留序号流程（CLI/菜单用，先 `--list` 看明细再 `--pick`）。
-- 全链路支持代理（GUI「代理」框 / CLI `--proxy`，嗅探与下载共用）；连接被拒时 `_fetch_page()` 依次自动回退：curl_cffi 浏览器指纹 → 系统代理（注册表）→ 常见本地端口（`COMMON_PROXY_PORTS`），成功的探测代理记入 `_detected_proxy` 供下载复用（`_effective_proxy`），全部失败抛出带尝试明细的错误。
-- 预览在软件内完成：`capture_preview_frames()` 用内置 ffmpeg 对选中资源抽帧（自动带 Referer/UA 头，`-rw_timeout` 限时；音频流只解析流信息），`fetch_media_bytes()` 供图片直显；`gui/preview.py` 的 `PreviewWindow` 后台线程取帧、PIL 缩放展示（点击缩略图放大），不打开浏览器。
-- 独立入口：`python -m file_tools.core.media_grab URL [-o OUTPUT] [--list] [--probe] [--pick N ...] [--all] [--no-mp4] [--referer URL] [--proxy URL]`。
+- m3u8：主播放列表自动选最高带宽，分段并发下载合并（瞬时 5xx/限流失败的分段收尾串行补抓两轮）；AES-128 分段（`EXT-X-KEY`）依赖 `pycryptodome`/`cryptography`（懒导入）；m3u8 输出文件名优先用页面标题。
+- 资源统一为 `MediaResource`（url/suffix/kind/label/size/title/headers/fallback_urls）；`sniff_media()` 直连嗅探（`probe=True` 时并发 HEAD 探测体积，上限 `PROBE_LIMIT`）、`sniff_media_browser()` 浏览器嗅探、`download_resources()` 下载选中资源（GUI 用）、`grab_media()` 保留序号流程（CLI/菜单用，先 `--list` 看明细再 `--pick`）。
+- 预览分模式：直连模式用 `capture_preview_frames()`（内置 ffmpeg 抽帧，`gui/preview.py` 软件内缩略图，音频流只解析流信息）；浏览器模式用 `open_external_preview()`——本地 127.0.0.1 预览代理（`_PreviewProxy`，空闲 30 分钟自动关闭），播放页在系统浏览器打开，m3u8 经代理改写后由内置 `data/hls.min.js`（hls.js v1.5.20，Apache-2.0）播放，代理转发自动走多级传输回退。
+- 独立入口：`python -m file_tools.core.media_grab URL [-o OUTPUT] [--mode {direct,browser}] [--list] [--probe] [--pick N ...] [--all] [--no-mp4] [--referer URL] [--max-capture-seconds N]`。
+
+### `file_tools/core/browser_sniff.py`
+
+- 浏览器模式的全部 CDP 机制（依赖 `websocket-client`）：
+  - `find_browser_exe()` 按 Chrome→Edge 常见路径查找浏览器。
+  - `BrowserSession`：独立临时用户数据目录（不碰用户真实配置/Cookie/扩展）+ 随机 127.0.0.1 调试端口 + `--no-first-run` 等安全参数；结束即终止进程并删除临时目录；WebSocket 用 `suppress_origin` 免 `--remote-allow-origins` 宽松开关。
+  - `CDPClient`：单读线程分发（响应按 id 路由、事件进列表）；`send()` 用于可能与 Fetch 拦截互锁的 `Page.navigate`（只发不等）。
+  - `capture_via_browser()`：Network 事件 → `MediaRecorder`（纯逻辑、可离线测试）按后缀或 MIME 筛媒体地址（跳过 `blob:`/`data:`），录制完整请求头与页面标题；`on_ready(session, cdp)` 钩子供自动化测试注入交互。
+  - `BrowserHTTPSession`：伪装成 requests.Session 的浏览器引擎传输（页面内 fetch + 响应虹吸）；无头启动但覆盖 UA（去掉 HeadlessChrome 字样防 CDN 识别），先暖场导航到资源页面再取资源；CDP 事件按 URL 匹配，调用必须串行（`_TransportChain` 已加锁）。
 
 ### `file_tools/core/suffix_manager.py`
 
@@ -73,13 +85,13 @@
 - `theme.py`：`enable_dpi_awareness()` 必须在创建 Tk 之前调用（进程级 DPI 感知，否则窗口和文件对话框在高分屏上模糊），`setup_theme()` 计算缩放比例并配置字体与 ttk 样式；所有尺寸经过 `scale()` 换算，新增控件不要写死像素。
 - `app.py` `main()`：创建根窗口后先 `withdraw()`，构建与居中完成后再 `deiconify()` 一次性显示——防止启动时“先小窗后放大”的闪烁，勿改动此顺序。
 - `runner.py`：任务在后台线程执行，print 经队列交给主线程，同一时间只允许一个任务；`submit()` 支持可选 `on_done(message, succeeded)` 完成回调（主线程执行，用于视图刷新嗅探结果）。
-- `views/`：每个工具一个视图类（ID/TITLE/SUBTITLE + `build()` + `_run()`），在 `views/__init__.py` 注册；核心模块在 worker 内懒导入。`grab_view` 为两段式：嗅探 → 资源表格（勾选/全选/预览/复制链接，双击行预览）→ 下载选中；`novel_view` 为搜索列表 + 下载表单（格式/章节范围/代理）；`widgets.py` 的表单辅助照常复用。
+- `views/`：每个工具一个视图类（ID/TITLE/SUBTITLE + `build()` + `_run()`），在 `views/__init__.py` 注册；核心模块在 worker 内懒导入。`grab_view` 为两段式：选模式（直连/浏览器）→ 嗅探 → 资源表格（勾选/全选/预览/复制链接，双击行预览）→ 下载选中；直连模式预览在软件内抽帧，浏览器模式经本地代理在系统浏览器播放；`novel_view` 为搜索列表 + 下载表单（格式/章节范围/代理）；`widgets.py` 的表单辅助照常复用。
 - 入口：`python -m file_tools.gui`、交互菜单选项 6、`FileTools.exe`。
 
 ### `file_tools/selftest.py` 与 `build_exe.py`
 
-- `python -m file_tools.selftest`（或 `FileTools.exe --selftest`）在当前环境冒烟测试六项核心工具（media_grab 用本地 HTTP 服务器测试嗅探/合并/AES 解密/ffmpeg 抽帧预览；download_images 用本地服务器测试下载；fanqie_novel 仅离线测试纯函数，均不依赖外网），全部通过退出码 0。
-- `python build_exe.py` 用 PyInstaller 打包 GUI 为 `dist/FileTools/FileTools.exe`（目录模式，`--onefile` 为单文件）；`--collect-all imageio_ffmpeg` 把 ffmpeg 打进产物；构建前需 `pip install pyinstaller`。
+- `python -m file_tools.selftest`（或 `FileTools.exe --selftest`）在当前环境冒烟测试各项核心工具（media_grab 用本地 HTTP 服务器测试嗅探/合并/AES 解密/ffmpeg 抽帧预览；download_images 用本地服务器测试下载；fanqie_novel 与 browser_sniff 仅离线测试纯函数——媒体识别/CDP 事件消费/父域计算/播放列表改写；preview_proxy 离线测试本地预览代理的透传与 m3u8 改写，均不依赖外网、不启动浏览器），全部通过退出码 0。
+- `python build_exe.py` 用 PyInstaller 打包 GUI 为 `dist/FileTools/FileTools.exe`（目录模式，`--onefile` 为单文件）；`--collect-all imageio_ffmpeg` 把 ffmpeg 打进产物，`core/data/`（番茄后端、hls.min.js）整体随包；构建前需 `pip install pyinstaller`。
 
 ## 环境与分支
 
