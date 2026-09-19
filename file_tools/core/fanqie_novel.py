@@ -99,17 +99,61 @@ def _shutdown_tomato() -> None:
 atexit.register(_shutdown_tomato)
 
 
+def _tomato_config_yaml(fmt: str) -> str:
+    """完整后端配置。注意 /api/config/raw 是整份替换，必须始终带上 save_path。"""
+    lines = [
+        "max_workers: 3",
+        "request_timeout: 15",
+        "max_retries: 3",
+        "save_path: '%s'" % (_TOMATO_WORKDIR / "output").as_posix(),
+        "novel_format: %s" % fmt,
+        "bulk_files: false",
+        "auto_clear_dump: true",
+        "auto_open_downloaded_files: false",
+        "enable_audiobook: false",
+        "use_official_api: true",
+        "ask_format_after_download: false",
+        "ask_after_download: false",
+        "preferred_book_name_field: book_name",
+        "allow_overwrite_files: true",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def _tomato_server() -> str:
-    """启动（或复用）内置后端的 Web 服务，返回 base URL。"""
+    """启动内置后端的 Web 服务（先清场遗留实例），返回 base URL。
+
+    后端 exe 为本工具独占组件，save_path 等配置只在启动时读取，
+    因此不复用任何遗留实例：每次会话强制杀掉旧进程后重新启动。
+    """
     global _tomato_proc
     base = f"http://127.0.0.1:{_TOMATO_PORT}"
     if _tomato_proc is not None and _tomato_proc.poll() is None:
-        return base
-    try:
-        if requests.get(base + "/api/status", timeout=2).json().get("version"):
-            return base  # 已有实例（如上次运行遗留）在监听
-    except Exception:  # noqa: BLE001 - 端口无人监听则启动
-        pass
+        try:
+            status = requests.get(base + "/api/status", timeout=2).json()
+            if Path(status.get("save_dir") or "").resolve() == (_TOMATO_WORKDIR / "output").resolve():
+                return base  # 本会话已启动且配置一致
+        except Exception:  # noqa: BLE001 - 状态异常则走清场重启
+            pass
+        _shutdown_tomato()
+
+    # 清场：按通配符杀掉任何遗留实例（不同版本文件名不同，且它们持有旧配置）
+    subprocess.run(
+        [
+            "powershell", "-NoProfile", "-Command",
+            "Get-Process 'TomatoNovelDownloader*' -ErrorAction SilentlyContinue | "
+            "Stop-Process -Force",
+        ],
+        capture_output=True, check=False,
+    )
+    # 等待端口真正释放（杀进程后内核回收监听有延迟）
+    for _ in range(20):
+        try:
+            requests.get(base + "/api/status", timeout=1)
+            time.sleep(0.5)
+        except requests.RequestException:
+            break
+    time.sleep(0.5)
 
     exe = _find_tomato_exe()
     if exe is None:
@@ -120,45 +164,43 @@ def _tomato_server() -> str:
     workdir = _TOMATO_WORKDIR
     workdir.mkdir(parents=True, exist_ok=True)
     (workdir / "output").mkdir(exist_ok=True)
-    (workdir / "config.yml").write_text(
-        "max_workers: 3\n"
-        "request_timeout: 15\n"
-        "max_retries: 3\n"
-        f"save_path: '{(workdir / 'output').as_posix()}'\n"
-        "novel_format: txt\n"
-        "bulk_files: false\n"
-        "auto_clear_dump: true\n"
-        "auto_open_downloaded_files: false\n"
-        "enable_audiobook: false\n"
-        "use_official_api: true\n"
-        "ask_format_after_download: false\n"
-        "ask_after_download: false\n"
-        "preferred_book_name_field: book_name\n",
-        encoding="utf-8",
-    )
+    (workdir / "config.yml").write_text(_tomato_config_yaml("txt"), encoding="utf-8")
     creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     _tomato_proc = subprocess.Popen(
         [str(exe), "--server", "--data-dir", str(workdir)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        cwd=str(workdir),
         creationflags=creationflags,
         env={**os.environ, "TOMATO_WEB_ADDR": f"127.0.0.1:{_TOMATO_PORT}"},
     )
-    for _ in range(40):
+    for _ in range(60):
         if _tomato_proc.poll() is not None:
             break
         try:
-            if requests.get(base + "/api/status", timeout=2).json().get("version"):
+            status = requests.get(base + "/api/status", timeout=2).json()
+            if status.get("version") and Path(
+                status.get("save_dir") or ""
+            ).resolve() == (_TOMATO_WORKDIR / "output").resolve():
                 return base
         except Exception:  # noqa: BLE001 - 尚未就绪
             time.sleep(0.5)
+    _shutdown_tomato()
     raise RuntimeError("内置番茄下载后端启动失败")
 
 
-def _tomato_set_format(base: str, fmt: str) -> None:
+def _tomato_set_format(base: str, fmt: str) -> Path:
+    """整份替换后端配置（部分 yaml 会丢 save_path），返回产物目录。"""
     requests.post(
-        base + "/api/config/raw", json={"yaml": f"novel_format: {fmt}\n"}, timeout=10
+        base + "/api/config/raw", json={"yaml": _tomato_config_yaml(fmt)}, timeout=10
     ).raise_for_status()
+    save_dir = _TOMATO_WORKDIR / "output"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    status = requests.get(base + "/api/status", timeout=10).json()
+    actual = Path(status.get("save_dir") or "")
+    if actual.resolve() != save_dir.resolve():
+        raise RuntimeError(f"后端保存目录异常: {actual}（预期 {save_dir}）")
+    return save_dir
 
 
 # -------- 搜索与下载 --------
@@ -213,9 +255,8 @@ def download_novel(
     if fmt not in {"txt", "epub"}:
         raise ValueError(f"不支持的格式: {fmt}")
     base = _tomato_server()
-    _tomato_set_format(base, fmt)
-    status = requests.get(base + "/api/status", timeout=10).json()
-    save_dir = Path(status.get("save_dir") or (_TOMATO_WORKDIR / "output"))
+    save_dir = _tomato_set_format(base, fmt)
+    created_before = time.time()
 
     payload = {"book_id": str(book_id)}
     bounds = parse_chapter_range(chapter_range)
@@ -253,11 +294,16 @@ def download_novel(
         raise RuntimeError("后端下载超时")
 
     suffix = ".txt" if fmt == "txt" else ".epub"
-    produced = sorted(
-        save_dir.glob(f"*{suffix}"), key=lambda p: p.stat().st_mtime, reverse=True
-    )
+    # 只认本次任务开始之后生成的文件，避免复制到上次下载的旧书
+    produced = [
+        p for p in save_dir.glob(f"*{suffix}")
+        if p.stat().st_mtime >= created_before - 5
+    ]
+    produced.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     if not produced:
-        raise RuntimeError("后端未生成输出文件")
+        raise RuntimeError(
+            f"后端未生成本次任务的输出文件（{save_dir} 下无 {suffix} 新文件）"
+        )
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
