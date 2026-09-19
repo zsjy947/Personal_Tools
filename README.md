@@ -163,10 +163,10 @@ python -m file_tools.core.download_images -i urls.txt --concurrency 4 --overwrit
 
 ### 番茄小说搜索下载（仅供学习研究）
 
-内置 [Tomato-Novel-Downloader](https://github.com/zhongbai2333/Tomato-Novel-Downloader)
-（v2.4.15，MIT 许可，随产物打包于 `file_tools/core/data/`）作为下载后端，走
-**App 官方 API 明文链路**（设备注册 → 内容密钥 → 批量章节），速度快且正文无错字；
-后端不可用时自动回退到网页解析 + 字体反混淆方案（fontTools 字形匹配还原率约 98%）。
+全部功能由内置的 [Tomato-Novel-Downloader](https://github.com/zhongbai2333/Tomato-Novel-Downloader)
+后端完成（v2.4.15，MIT 许可，随产物打包于 `file_tools/core/data/`）：Python 侧仅是
+其后端 Web API 的薄客户端，以 `--server` 模式在 127.0.0.1 本地端口调用（仅本机访问，
+随程序退出自动结束），走 App 官方 API 明文链路，搜索与下载速度快且正文无错字。
 
 ```powershell
 # 搜索
@@ -180,7 +180,6 @@ python -m file_tools.core.fanqie_novel download 7143038691944959011 --format epu
 ```
 
 - 可视化界面「番茄小说下载」页：搜索 → 双击选中 → 选格式/范围 → 下载。
-- 后端以 `--server` 模式在 127.0.0.1 本地端口运行（仅本机访问，退出程序自动结束）。
 - 本功能仅供学习研究网络爬虫技术，请尊重作者版权，勿用于商业用途。
 
 ## 归档：archive 分支

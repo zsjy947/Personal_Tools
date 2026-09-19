@@ -51,14 +51,14 @@
 
 ### `file_tools/core/fanqie_novel.py`
 
-- 番茄小说搜索下载（仅供学习研究）。**双后端架构**：
-  - 主后端：内置 `data/TomatoNovelDownloader.exe`（上游 Tomato-Novel-Downloader v2.4.15，MIT，
-    见 data/ 内许可文件），以 `--server` 模式spawn 在 127.0.0.1:38474（`TOMATO_WEB_ADDR`），
-    经其 HTTP API（`/api/search`、`POST /api/jobs`、`GET /api/jobs` 轮询）驱动官方 API
-    明文链路；产物从其 save_dir 复制到用户输出目录；进程全局复用，atexit 终止。
-  - 回退后端：网页解析 + 字体反混淆（书页 `__INITIAL_STATE__`、目录接口、reader 页内嵌
-    正文；fontTools 字形轮廓 Chamfer 匹配 + 常用字先验；映射/参考索引磁盘缓存）。
-    App 批量明文接口需闭源的 X-Helios 签名，社区四签名实测被拒，故只能作为回退。
+- 番茄小说搜索下载（仅供学习研究）。**纯后端薄客户端**：全部搜索/下载由内置
+  `data/TomatoNovelDownloader.exe`（上游 Tomato-Novel-Downloader v2.4.15，MIT，
+  许可文本在 data/ 内）完成；本模块以 `--server` 模式将其 spawn 在 127.0.0.1:38474
+  （`TOMATO_WEB_ADDR`），经其 HTTP API（`/api/search`、`/api/preview/{id}`、
+  `POST /api/jobs`、`GET /api/jobs` 轮询）驱动官方 API 明文链路；产物从其
+  save_dir 复制到用户输出目录；后端进程全局复用，atexit 终止。
+- 不要在此模块加入网页抓取/字体反混淆逻辑（上游 App 批量接口需闭源 X-Helios
+  签名，社区四签名实测被服务端静默拒绝，网页正文方案已被本模块淘汰）。
 - 独立入口：`python -m file_tools.core.fanqie_novel {search,download}`；GUI 视图 `novel_view.py`。
 
 ### `file_tools/core/download_images.py`

@@ -3,7 +3,7 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from ..theme import COLORS, FONTS, scale
+from ..theme import scale
 from ..widgets import Card, entry_row, form_label, path_row, radio_row, run_button_row
 from .base import ToolView
 
@@ -69,7 +69,6 @@ class NovelView(ToolView):
         self.tree.bind("<Double-1>", lambda _e: self._use_selected())
         self.result_hint = ttk.Label(body, text="尚未搜索", style="Hint.TLabel")
         self.result_hint.grid(row=row, column=2, sticky="nw")
-        body.rowconfigure(row, weight=0)
 
         row += 1
         form_label(body, row, "输出目录")
@@ -93,14 +92,6 @@ class NovelView(ToolView):
         ).grid(row=row, column=2, sticky="w")
 
         row += 1
-        form_label(body, row, "代理")
-        self.proxy = tk.StringVar()
-        entry_row(body, row, self.proxy)
-        ttk.Label(body, text="可选，如 http://127.0.0.1:7890", style="Hint.TLabel").grid(
-            row=row, column=2, sticky="w"
-        )
-
-        row += 1
         self.run_button = run_button_row(body, row, self.RUN_TEXT, self._run)
         self.app.register_run_button(self.run_button)
         self.app.register_run_button(self.search_button)
@@ -113,33 +104,25 @@ class NovelView(ToolView):
         if path:
             self.output_dir.set(path)
 
-    def _proxy_value(self) -> str | None:
-        value = self.proxy.get().strip().strip('"')
-        return value or None
-
     def _search(self) -> None:
         keyword = self.keyword.get().strip().strip('"')
         if not keyword:
             messagebox.showwarning("缺少参数", "请先输入书名或链接。")
             return
-        proxy = self._proxy_value()
 
         def worker() -> str:
-            from ...core.fanqie_novel import fetch_book, search_books
+            from ...core.fanqie_novel import fetch_book, re_search_id, search_books
 
             match = re_search_id(keyword)
             if match:
-                book = fetch_book(match, proxy=proxy)
-                books = [book]
+                books = [fetch_book(match)]
             else:
-                books = search_books(keyword, proxy=proxy)
+                books = search_books(keyword)
             self._books = books
             print(f"搜索到 {len(books)} 本书籍")
             for number, book in enumerate(books, 1):
-                print(
-                    f"  [{number}] {book.title} | {book.author} | "
-                    f"{book.word_count}字 | id={book.book_id}"
-                )
+                words = f"{book.word_count}字" if book.word_count else "—"
+                print(f"  [{number}] {book.title} | {book.author} | {words} | id={book.book_id}")
             if not books:
                 return "没有搜索到结果。"
             return f"搜索完成：共 {len(books)} 本，双击结果行可选中。"
@@ -151,7 +134,7 @@ class NovelView(ToolView):
             for book in getattr(self, "_books", []):
                 self.tree.insert(
                     "", "end",
-                    values=(book.title, book.author, book.word_count, book.book_id),
+                    values=(book.title, book.author, book.word_count or "—", book.book_id),
                 )
             self.result_hint.config(text=f"共 {len(getattr(self, '_books', []))} 本")
 
@@ -172,6 +155,8 @@ class NovelView(ToolView):
         if not keyword:
             messagebox.showwarning("缺少参数", "请先输入书名、链接或书籍 ID。")
             return
+        from ...core.fanqie_novel import re_search_id
+
         book_id = re_search_id(keyword)
         if not book_id:
             selected = self.tree.selection()
@@ -184,7 +169,6 @@ class NovelView(ToolView):
         output_dir = self.output_dir.get().strip().strip('"') or "novel_downloads"
         fmt = self.fmt.get()
         chapter_range = self.chapter_range.get().strip()
-        proxy = self._proxy_value()
 
         def worker() -> str:
             from ...core.fanqie_novel import download_novel
@@ -195,24 +179,12 @@ class NovelView(ToolView):
             summary = download_novel(
                 book_id, output_dir,
                 fmt=fmt, chapter_range=chapter_range,
-                proxy=proxy, on_progress=progress,
+                on_progress=progress,
             )
+            failed = f"，失败 {summary.failed}" if summary.failed else ""
             return (
-                f"下载完成：《》共 {summary.downloaded}/{summary.total} 章"
-                f"{'，失败 ' + str(summary.failed) if summary.failed else ''}"
-                f"，保存至 {summary.output}。".replace("《》", "《…》")
+                f"下载完成：{summary.downloaded}/{summary.total} 章{failed}，"
+                f"保存至 {summary.output}。"
             )
 
         self.app.submit("下载番茄小说", self.run_button, worker)
-
-
-def re_search_id(text: str) -> str | None:
-    """从文本中提取书籍 ID（纯数字 ID 或 fanqienovel.com/page/{id} 链接）。"""
-    import re
-
-    match = re.search(r"fanqienovel\.com/page/(\d+)", text)
-    if match:
-        return match.group(1)
-    if re.fullmatch(r"\d{5,25}", text.strip()):
-        return text.strip()
-    return None
