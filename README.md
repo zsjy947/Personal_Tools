@@ -163,10 +163,10 @@ python -m file_tools.core.download_images -i urls.txt --concurrency 4 --overwrit
 
 ### 番茄小说搜索下载（仅供学习研究）
 
-参考开源项目 Tomato-Novel-Downloader / fanqie-novel-download 的公开实现：解析书籍页
-`__INITIAL_STATE__` 拿书名/作者/简介，经目录接口取分卷章节，抓取章节页内嵌正文；
-正文中的字体混淆（随机 PUA 码位）通过 fontTools 提取字形轮廓、与系统中文字体做
-形状匹配还原，映射按字体哈希缓存。支持 TXT/EPUB 输出与章节范围选择。
+内置 [Tomato-Novel-Downloader](https://github.com/zhongbai2333/Tomato-Novel-Downloader)
+（v2.4.15，MIT 许可，随产物打包于 `file_tools/core/data/`）作为下载后端，走
+**App 官方 API 明文链路**（设备注册 → 内容密钥 → 批量章节），速度快且正文无错字；
+后端不可用时自动回退到网页解析 + 字体反混淆方案（fontTools 字形匹配还原率约 98%）。
 
 ```powershell
 # 搜索
@@ -180,9 +180,8 @@ python -m file_tools.core.fanqie_novel download 7143038691944959011 --format epu
 ```
 
 - 可视化界面「番茄小说下载」页：搜索 → 双击选中 → 选格式/范围 → 下载。
-- 字体反混淆依赖 `fonttools`/`brotli`（已在 requirements），首次匹配需构建字形
-  索引（缓存后秒级）；还原率约 98%，个别形近字可能仍误配。
-- 本功能仅供学习研究网络爬虫与字体反混淆技术，请尊重作者版权，勿用于商业用途。
+- 后端以 `--server` 模式在 127.0.0.1 本地端口运行（仅本机访问，退出程序自动结束）。
+- 本功能仅供学习研究网络爬虫技术，请尊重作者版权，勿用于商业用途。
 
 ## 归档：archive 分支
 

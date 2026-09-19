@@ -1,6 +1,6 @@
-"""番茄小说搜索与下载（仅供学习研究网络爬虫技术，请尊重作者版权，勿用于商业用途）。
+"""番茄小说搜索与下载（仅供学习研究网络爬虫与字体反混淆技术，请尊重作者版权，勿用于商业用途）。
 
-下载链路参考开源项目 Tomato-Novel-Downloader 与 fanqie-novel-download 的公开实现：
+下载链路参考开源项目 Tomato-Novel-Downloader (MIT) 与 fanqie-novel-download 的公开实现：
 
 - 书籍信息：解析 `fanqienovel.com/page/{book_id}` 的 `__INITIAL_STATE__`。
 - 章节目录：`fanqienovel.com/api/reader/directory/detail?bookId=`（分卷+章节标题）。
@@ -8,17 +8,27 @@
   `reader.chapterData.content`（新版站点已不再提供明文正文 API）。
 - 正文反混淆：站点用随机文件名的字体把部分汉字映射到私有区码位（PUA），
   本模块下载混淆字体后，用 fontTools 提取字形轮廓，与系统中文字体的字形
-  做归一化 Chamfer 距离匹配还原真实字符；映射按字体哈希缓存到本地。
+  做归一化 Chamfer 距离匹配还原真实字符（numpy 分块向量化 + 常用字先验）；
+  映射按字体哈希、参考字形索引按字体文件指纹缓存到本地。
 - 输出：TXT 或 EPUB（标准库 zipfile 打包）。
+
+关于 App 批量明文接口（batch_full，即 Tomato-Novel-Downloader 官方 API 模式）：
+经实测，该链路需要客户端签名 X-Helios（以及设备 activate、多字段 registerkey
+请求），这些只存在于其未公开的官方 API crate 中；社区已知的四签名实现
+（XGorgon/XArgus/XLadon/XKhronos）在 registerkey 与 batch_full 上均被服务端
+静默拒绝（返回空体），仅 device_register 可用。因此本模块采用网页正文 +
+字体反混淆的自有实现方案。
 """
 
 import argparse
+import atexit
 import hashlib
 import html as html_module
 import io
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import threading
@@ -626,21 +636,216 @@ def _write_epub(book: BookInfo, chapters: dict[str, tuple[str, list[str]]],
 
 # -------- 下载入口 --------
 
+_TOMATO_EXE = Path(__file__).resolve().parent / "data" / "TomatoNovelDownloader.exe"
+_TOMATO_PORT = 38474
+_tomato_proc = None  # 全局复用，避免每次下载都重启后端
+_tomato_base = None
+
+
+def _shutdown_tomato() -> None:
+    global _tomato_proc
+    if _tomato_proc is not None and _tomato_proc.poll() is None:
+        _tomato_proc.terminate()
+    _tomato_proc = None
+
+
+atexit.register(_shutdown_tomato)
+
+
+def _find_tomato_exe() -> Path | None:
+    """定位内置 Rust 后端：环境变量优先，其次随包 data 目录。"""
+    override = os.environ.get("FILE_TOOLS_TOMATO_EXE", "").strip()
+    if override and Path(override).is_file():
+        return Path(override)
+    if _TOMATO_EXE.is_file():
+        return _TOMATO_EXE
+    return None
+
+
+def _tomato_server() -> str:
+    """启动（或复用）内置后端的 Web 服务，返回 base URL。"""
+    global _tomato_proc, _tomato_base
+    base = f"http://127.0.0.1:{_TOMATO_PORT}"
+    if _tomato_proc is not None and _tomato_proc.poll() is None:
+        return base
+    try:
+        if requests.get(base + "/api/status", timeout=2).json().get("version"):
+            return base  # 已有实例（如上次运行遗留）在监听
+    except Exception:  # noqa: BLE001 - 端口无人监听则启动
+        pass
+
+    workdir = _cache_dir() / "tomato"
+    workdir.mkdir(parents=True, exist_ok=True)
+    output_dir = workdir / "output"
+    output_dir.mkdir(exist_ok=True)
+    config = workdir / "config.yml"
+    config.write_text(
+        "max_workers: 3\n"
+        "request_timeout: 15\n"
+        "max_retries: 3\n"
+        f"save_path: '{output_dir.as_posix()}'\n"
+        "novel_format: txt\n"
+        "bulk_files: false\n"
+        "auto_clear_dump: true\n"
+        "auto_open_downloaded_files: false\n"
+        "enable_audiobook: false\n"
+        "use_official_api: true\n"
+        "ask_format_after_download: false\n"
+        "ask_after_download: false\n"
+        "preferred_book_name_field: book_name\n",
+        encoding="utf-8",
+    )
+    import subprocess
+
+    creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    _tomato_proc = subprocess.Popen(
+        [str(_TOMATO_EXE), "--server", "--data-dir", str(workdir)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=creationflags,
+        env={**os.environ, "TOMATO_WEB_ADDR": f"127.0.0.1:{_TOMATO_PORT}"},
+    )
+    for _ in range(40):
+        if _tomato_proc.poll() is not None:
+            break
+        try:
+            if requests.get(base + "/api/status", timeout=2).json().get("version"):
+                return base
+        except Exception:  # noqa: BLE001 - 尚未就绪
+            time.sleep(0.5)
+    raise RuntimeError("内置番茄下载后端启动失败")
+
+
+def _tomato_set_format(base: str, fmt: str) -> None:
+    yaml_text = f"novel_format: {fmt}\n"
+    requests.post(base + "/api/config/raw", json={"yaml": yaml_text}, timeout=10).raise_for_status()
+
+
+def _tomato_download(
+    book_id: str,
+    output_dir: str | Path,
+    fmt: str,
+    chapter_range: str,
+    proxy: str | None,
+    on_progress,
+) -> NovelSummary:
+    """通过内置 Rust 后端（官方 API 明文链路）下载。"""
+    summary = NovelSummary()
+    base = _tomato_server()
+    _tomato_set_format(base, fmt)
+
+    status = requests.get(base + "/api/status", timeout=10).json()
+    save_dir = Path(status.get("save_dir") or (_cache_dir() / "tomato" / "output"))
+
+    payload = {"book_id": str(book_id)}
+    bounds = parse_chapter_range(chapter_range, 10**9)
+    if bounds:
+        payload["range_start"] = bounds[0]
+        payload["range_end"] = bounds[1]
+    response = requests.post(base + "/api/jobs", json=payload, timeout=15)
+    response.raise_for_status()
+    job = response.json()
+    job_id = str(job.get("id"))
+
+    deadline = time.time() + 900
+    title = ""
+    saved = total = 0
+    while time.time() < deadline:
+        time.sleep(1.5)
+        items = requests.get(base + "/api/jobs", timeout=10).json().get("items") or []
+        item = next((it for it in items if str(it.get("id")) == job_id), None)
+        if item is None:
+            continue
+        title = item.get("title") or title
+        progress = item.get("progress") or {}
+        saved = int(progress.get("saved_chapters") or 0)
+        total = int(progress.get("chapter_total") or 0)
+        state = item.get("state")
+        if on_progress and total:
+            on_progress(min(saved, total), total, title)
+        if state == "done":
+            summary.downloaded, summary.total = saved, total or saved
+            break
+        if state in {"failed", "error", "cancelled"}:
+            raise RuntimeError(f"内置后端下载失败: {item.get('message') or state}")
+        if item.get("book_name_options") or item.get("format_options"):
+            requests.post(f"{base}/api/jobs/{job_id}/cancel", timeout=10)
+            raise RuntimeError("后端任务需要交互选择（书名/格式），已在配置中禁用，请重试")
+    else:
+        raise RuntimeError("内置后端下载超时")
+
+    # 定位产物文件
+    output_dir = Path(output_dir) if output_dir else save_dir.parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+    candidates = sorted(
+        save_dir.glob(f"*{'.txt' if fmt == 'txt' else '.epub'}"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        raise RuntimeError("后端未生成输出文件")
+    destination = output_dir / f"{sanitize_filename(title or book_id)}{'.txt' if fmt == 'txt' else '.epub'}"
+    shutil.copyfile(candidates[0], destination)
+    summary.output = str(destination)
+    print(
+        f"完成: 《{title or book_id}》{summary.downloaded}/{summary.total or '?'} 章"
+        f"（官方 API 明文链路） → {destination}"
+    )
+    return summary
+
+
 def download_novel(
     book_id: str,
     output_dir: str | Path = "novel_downloads",
     *,
     fmt: str = "txt",
     chapter_range: str = "",
-    max_workers: int = 4,
-    delay: float = 0.2,
+    max_workers: int = 8,
+    delay: float = 0.0,
     proxy: str | None = None,
     on_progress=None,
 ) -> NovelSummary:
-    """下载整本（或指定范围）小说。on_progress(完成数, 总数, 章节标题)。"""
+    """下载整本（或指定范围）小说。on_progress(完成数, 总数, 章节标题)。
+
+    优先使用内置 Rust 后端（官方 API 明文链路，快且无错字）；
+    后端不可用时回退到网页解析 + 字体反混淆方案。
+    """
     if fmt not in {"txt", "epub"}:
         raise ValueError(f"不支持的格式: {fmt}")
+    exe = _find_tomato_exe()
+    if exe is not None:
+        try:
+            print("使用内置番茄下载后端（官方 API）…")
+            return _tomato_download(
+                book_id, output_dir, fmt, chapter_range, proxy, on_progress
+            )
+        except Exception as exc:  # noqa: BLE001 - 后端失败回退网页方案
+            print(f"内置后端不可用（{exc}），回退网页解析方案…", file=sys.stderr)
+    return _download_novel_web(
+        book_id, output_dir,
+        fmt=fmt, chapter_range=chapter_range,
+        max_workers=max_workers, delay=delay,
+        proxy=proxy, on_progress=on_progress,
+    )
+
+
+def _download_novel_web(
+    book_id: str,
+    output_dir: str | Path = "novel_downloads",
+    *,
+    fmt: str = "txt",
+    chapter_range: str = "",
+    max_workers: int = 8,
+    delay: float = 0.0,
+    proxy: str | None = None,
+    on_progress=None,
+) -> NovelSummary:
+    """网页解析 + 字体反混淆方案（无需内置后端）。"""
+    if fmt not in {"txt", "epub"}:
+        raise ValueError(f"不支持的格式: {fmt}")
+    started = time.time()
     book = fetch_book(book_id, proxy=proxy)
+    print(f"《{book.title}》{book.author} | 共 {len(book.chapters)} 章")
     order = book.chapters
     bounds = parse_chapter_range(chapter_range, len(order))
     if bounds:
@@ -657,33 +862,41 @@ def download_novel(
     chapters: dict[str, tuple[str, list[str]]] = {}
     lock = threading.Lock()
     done = [0]
-    stop = threading.Event()
+    failed: list[dict] = []
 
     def fetch_one(chapter: dict) -> None:
-        if stop.is_set():
-            return
+        last_error: Exception | None = None
         for attempt in range(3):
             try:
                 title, paragraphs = fetch_chapter(book, chapter, session)
-                break
+                with lock:
+                    chapters[chapter["item_id"]] = (title, paragraphs)
+                    done[0] += 1
+                    summary.downloaded += 1
+                    if on_progress:
+                        on_progress(done[0], len(order), title)
+                if delay > 0:
+                    time.sleep(delay)
+                return
             except Exception as exc:  # noqa: BLE001 - 单章重试
-                if attempt == 2:
-                    with lock:
-                        summary.failed += 1
-                    print(f"下载失败: {chapter['title']} ({exc})", file=sys.stderr)
-                    return
-                time.sleep(1.0 + attempt)
+                last_error = exc
+                time.sleep(0.5 + attempt)
         with lock:
-            chapters[chapter["item_id"]] = (title, paragraphs)
-            done[0] += 1
-            summary.downloaded += 1
-            if on_progress:
-                on_progress(done[0], len(order), title)
-        if delay > 0:
-            time.sleep(delay)
+            failed.append(chapter)
+            summary.failed += 1
+        print(f"下载失败: {chapter['title']} ({last_error})", file=sys.stderr)
 
     with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
         list(pool.map(fetch_one, order))
+
+    # 失败章节串行重试一轮（避免并发触发风控）
+    if failed:
+        print(f"\n重试 {len(failed)} 个失败章节…")
+        retry = list(failed)
+        failed.clear()
+        summary.failed = 0
+        for chapter in retry:
+            fetch_one(chapter)
 
     if not chapters:
         raise RuntimeError("没有成功下载任何章节")
@@ -691,9 +904,11 @@ def download_novel(
         _write_txt(book, chapters, order, output)
     else:
         _write_epub(book, chapters, order, output)
+    elapsed = max(time.time() - started, 0.1)
     print(
         f"\n完成: 《{book.title}》{summary.downloaded}/{summary.total} 章"
         + (f"，失败 {summary.failed}" if summary.failed else "")
+        + f"，耗时 {elapsed:.0f}s（{summary.downloaded / elapsed:.1f} 章/秒）"
         + f" → {output}"
     )
     return summary
@@ -715,7 +930,7 @@ def main(argv: list[str] | None = None) -> int:
     download_parser.add_argument("-o", "--output", type=Path, default=Path("novel_downloads"))
     download_parser.add_argument("--format", choices=("txt", "epub"), default="txt")
     download_parser.add_argument("--range", dest="chapter_range", help="章节范围，如 1-100（默认全部）")
-    download_parser.add_argument("--workers", type=int, default=4, help="并发数（默认 4）")
+    download_parser.add_argument("--workers", type=int, default=8, help="并发数（默认 8）")
     download_parser.add_argument("--proxy", help="HTTP 代理地址")
 
     args = parser.parse_args(argv)

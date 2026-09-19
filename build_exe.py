@@ -219,6 +219,9 @@ def build(onefile: bool) -> None:
     ]
     if icon is not None:
         args += ["--icon", str(icon), "--add-data", f"{icon};assets"]
+    tomato_data = ROOT / "file_tools" / "core" / "data"
+    if tomato_data.is_dir():
+        args += ["--add-data", f"{tomato_data};file_tools/core/data"]
     args += ["--onefile" if onefile else "--onedir", str(ENTRY)]
 
     print("执行:", " ".join(args))

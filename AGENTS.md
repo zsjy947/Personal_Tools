@@ -51,10 +51,15 @@
 
 ### `file_tools/core/fanqie_novel.py`
 
-- 番茄小说搜索下载（仅供学习研究）：书页 `__INITIAL_STATE__` 取书籍信息，目录接口 `api/reader/directory/detail` 取分卷章节，正文来自 `fanqienovel.com/reader/{item_id}` 页面内嵌的 `reader.chapterData.content`。
-- 正文 PUA 字体混淆：`get_font_map()` 下载页面 @font-face 指向的混淆字体，`_match_font_map()` 用 fontTools 提取字形轮廓、与 `_REFERENCE_FONTS` 系统字体（msyh/simhei）做归一化 Chamfer 匹配，配合 `COMMON_CHARS` 常用字先验；映射按字体内容哈希缓存到临时目录，参考字形索引也有 npz 磁盘缓存。
-- 输出 TXT/EPUB（`_write_txt`/`_write_epub`，EPUB 用标准库 zipfile）；支持章节范围 `--range`；GUI 视图 `novel_view.py` 提供搜索列表与下载表单。
-- 独立入口：`python -m file_tools.core.fanqie_novel {search,download}`。
+- 番茄小说搜索下载（仅供学习研究）。**双后端架构**：
+  - 主后端：内置 `data/TomatoNovelDownloader.exe`（上游 Tomato-Novel-Downloader v2.4.15，MIT，
+    见 data/ 内许可文件），以 `--server` 模式spawn 在 127.0.0.1:38474（`TOMATO_WEB_ADDR`），
+    经其 HTTP API（`/api/search`、`POST /api/jobs`、`GET /api/jobs` 轮询）驱动官方 API
+    明文链路；产物从其 save_dir 复制到用户输出目录；进程全局复用，atexit 终止。
+  - 回退后端：网页解析 + 字体反混淆（书页 `__INITIAL_STATE__`、目录接口、reader 页内嵌
+    正文；fontTools 字形轮廓 Chamfer 匹配 + 常用字先验；映射/参考索引磁盘缓存）。
+    App 批量明文接口需闭源的 X-Helios 签名，社区四签名实测被拒，故只能作为回退。
+- 独立入口：`python -m file_tools.core.fanqie_novel {search,download}`；GUI 视图 `novel_view.py`。
 
 ### `file_tools/core/download_images.py`
 
