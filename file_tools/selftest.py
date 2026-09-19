@@ -225,42 +225,16 @@ def _test_media_grab(workdir: Path) -> None:
 
 
 def _test_fanqie_novel(workdir: Path) -> None:
-    """离线测试：文件名清理、章节范围解析、正文分段与 EPUB 打包。"""
-    from .core.fanqie_novel import (
-        BookInfo,
-        _content_to_paragraphs,
-        _write_epub,
-        _write_txt,
-        parse_chapter_range,
-        sanitize_filename,
-    )
+    """离线测试：文件名清理、章节范围解析、书籍 ID 提取。"""
+    from .core.fanqie_novel import parse_chapter_range, re_search_id, sanitize_filename
 
     assert sanitize_filename('a/b:c*d?"<>|.txt') == "a_b_c_d_.txt", "文件名清理不符"
-    assert parse_chapter_range("3-10", 100) == (3, 10), "范围解析不符"
-    assert parse_chapter_range("", 100) is None, "空范围应为 None"
-    assert parse_chapter_range("7", 100) == (7, 7), "单章范围不符"
-
-    html = "<article><h1>第1章</h1><p><blk>第一段</blk></p><p>第二段</p></article>"
-    paragraphs = _content_to_paragraphs(html)
-    assert paragraphs == ["第1章", "第一段", "第二段"], f"正文分段不符: {paragraphs}"
-
-    book = BookInfo(book_id="123", title="测试书", author="测试作者", abstract="简介")
-    chapters = {"1": ("第1章", ["段落一", "段落二"]), "2": ("第2章", ["段落三"])}
-    order = [{"item_id": "1"}, {"item_id": "2"}]
-    txt = workdir / "test.txt"
-    _write_txt(book, chapters, order, txt)
-    assert "第1章" in txt.read_text(encoding="utf-8"), "TXT 写入失败"
-
-    epub = workdir / "test.epub"
-    _write_epub(book, chapters, order, epub)
-    import zipfile
-
-    with zipfile.ZipFile(epub) as archive:
-        names = set(archive.namelist())
-        assert "mimetype" in names and "OEBPS/content.opf" in names, "EPUB 结构缺失"
-        assert "OEBPS/chapter_00001.xhtml" in names, "EPUB 章节缺失"
-        first = archive.read("OEBPS/chapter_00001.xhtml").decode("utf-8")
-        assert "段落一" in first and "段落二" in first, "EPUB 章节内容不符"
+    assert parse_chapter_range("3-10") == (3, 10), "范围解析不符"
+    assert parse_chapter_range("") is None, "空范围应为 None"
+    assert parse_chapter_range("7") == (7, 7), "单章范围不符"
+    assert re_search_id("https://fanqienovel.com/page/7143038691944959011") == "7143038691944959011"
+    assert re_search_id("7143038691944959011") == "7143038691944959011"
+    assert re_search_id("十日终焉") is None, "书名不应被当作 ID"
 
 
 def main() -> int:

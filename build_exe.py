@@ -207,13 +207,11 @@ def build(onefile: bool) -> None:
         # 界面里的工具模块是执行任务时才导入，显式收集防止漏打包
         "--collect-submodules",
         "file_tools.core",
-        # 内置 ffmpeg（imageio-ffmpeg）、curl_cffi（指纹回退）与 fonttools（小说反混淆）
+        # 内置 ffmpeg（imageio-ffmpeg）与 curl_cffi（指纹回退）
         "--collect-all",
         "imageio_ffmpeg",
         "--collect-all",
         "curl_cffi",
-        "--collect-all",
-        "fonttools",
         "--version-file",
         str(version_file),
     ]
