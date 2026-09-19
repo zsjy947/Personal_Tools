@@ -10,22 +10,18 @@ __pycache__/
 .vscode/
 .idea/
 
-# Generated output files
-random_data.txt
-temp/
-
 # PyInstaller packaging
 build/
 dist/
 
+# 程序运行产物（下载/转换输出，按需自行保留）
+novel_downloads/
+media_downloads/
+downloaded_images/
+downloads/
+logs/
+*.part
+
 # OS
 .DS_Store
 Thumbs.db
-
-# 番茄小说后端测试产物
-7143038691944959011/
-十日终焉.txt
-*.epub
-7558809412027042878/
-侯府郎君躺平失败记.txt
-折春漪.txt

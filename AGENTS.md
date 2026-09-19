@@ -8,7 +8,7 @@
 
 1. 核心工具位于 `file_tools/core/`，统一 CLI 入口为 `python -m file_tools`（懒加载核心模块）；可视化界面位于 `file_tools/gui/` 包，入口 `python -m file_tools.gui`；打包为 exe 用根目录 `python build_exe.py`。
 
-已弃置功能（上海地铁票价 `shanghai_metro_fare/`、根目录版图片下载脚本、旧版 `.1` 后缀/删除副本工具）归档在 `archive` 分支，仅作存档不维护；不要把它们加回主分支。
+已弃置功能仅存档于 `archive` 分支（当前只包含上海地铁票价 `shanghai_metro_fare/`，该分支不再保留任何 file_tools 历史版本——需要时看主分支 commit 记录）；不要把它们加回主分支。
 
 用户输入、输出路径必须来自命令行参数或交互输入，不要在脚本中加入本机绝对路径或要求用户修改的路径常量。脚本自身附带的数据和模板可以通过 `Path(__file__)` 定位。
 
@@ -86,4 +86,4 @@
 - Python 3.10+
 - 虚拟环境通常位于 `.venv/`
 - 安装依赖：`pip install -r requirements.txt`（ffmpeg 由 `imageio-ffmpeg` 提供，系统无需安装）
-- `archive` 分支为弃置功能存档（上海地铁票价、旧工具），只读不改
+- `archive` 分支为弃置功能存档（当前仅上海地铁票价工具），只读不改
