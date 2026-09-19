@@ -137,8 +137,11 @@ def _tomato_server() -> str:
             pass
         _shutdown_tomato()
 
-    # 清场：按通配符杀掉任何遗留实例（不同版本文件名不同，且它们持有旧配置）
-    subprocess.run(
+    # 清场：按通配符杀掉任何遗留实例（不同版本文件名不同，且它们持有旧配置）。
+    # 必须走 run_hidden（CREATE_NO_WINDOW）：GUI 进程拉起控制台程序会闪黑窗。
+    from .media_to_mp4 import run_hidden
+
+    run_hidden(
         [
             "powershell", "-NoProfile", "-Command",
             "Get-Process 'TomatoNovelDownloader*' -ErrorAction SilentlyContinue | "
