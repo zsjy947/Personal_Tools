@@ -152,6 +152,43 @@ def run_media_grab() -> None:
     )
 
 
+def run_fanqie_novel() -> None:
+    from .core.fanqie_novel import download_novel, search_books
+
+    keyword = ask_value("书名关键词或书籍 ID/链接").strip('"')
+    book_id = None
+    import re
+
+    match = re.search(r"fanqienovel\.com/page/(\d+)", keyword)
+    if match:
+        book_id = match.group(1)
+    elif re.fullmatch(r"\d{5,25}", keyword):
+        book_id = keyword
+    if book_id is None:
+        books = search_books(keyword)
+        if not books:
+            print("没有搜索到结果。")
+            return
+        for number, book in enumerate(books, 1):
+            print(f"  [{number}] {book.title} | {book.author} | id={book.book_id}")
+        while True:
+            choice = ask_value("选择序号")
+            if 1 <= int(choice) <= len(books):
+                book_id = books[int(choice) - 1].book_id
+                break
+            print("错误: 序号超出范围。")
+    output_value = input("输出目录（留空使用 novel_downloads）: ").strip().strip('"')
+    fmt_value = input("格式 txt/epub（留空 txt）: ").strip().lower() or "txt"
+    range_value = input("章节范围如 1-100（留空全部）: ").strip()
+    download_novel(
+        book_id,
+        output_value or "novel_downloads",
+        fmt=fmt_value if fmt_value in {"txt", "epub"} else "txt",
+        chapter_range=range_value,
+        on_progress=lambda done, total, title: print(f"[{done}/{total}] {title}"),
+    )
+
+
 def run_gui() -> None:
     """启动可视化界面，关闭窗口后返回主菜单。"""
     from .gui.app import main as gui_main
@@ -181,7 +218,8 @@ def main() -> int:
         "3": run_suffix_manager,
         "4": run_media_grab,
         "5": run_download_images,
-        "6": run_gui,
+        "6": run_fanqie_novel,
+        "7": run_gui,
     }
     while True:
         print(
@@ -191,7 +229,8 @@ def main() -> int:
             "3. 文件名标记管理（添加/移除标记、删除副本等）\n"
             "4. 网页媒体嗅探下载（含 m3u8 合并、B 站音视频合流）\n"
             "5. 图片批量下载（CSV/TXT 链接列表）\n"
-            "6. 打开可视化界面\n"
+            "6. 番茄小说搜索下载（仅供学习研究）\n"
+            "7. 打开可视化界面\n"
             "0. 退出\n"
             "进入工具后，可随时输入 0 返回主菜单。"
         )

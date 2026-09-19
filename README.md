@@ -18,7 +18,8 @@ python -m file_tools
 3. 文件名标记管理（添加/移除标记、删除副本等）
 4. 网页媒体嗅探下载（含 m3u8 合并、B 站音视频合流）
 5. 图片批量下载（CSV/TXT 链接列表）
-6. 打开可视化界面
+6. 番茄小说搜索下载（仅供学习研究）
+7. 打开可视化界面
 
 每项工具也可以独立使用命令行参数运行，核心模块位于 `file_tools/core/`。
 
@@ -159,6 +160,29 @@ python -m file_tools.core.download_images -i urls.txt --concurrency 4 --overwrit
 - 文件名取自 URL；无扩展名时按响应 `Content-Type` 补全；同名自动追加序号。
 - 已存在文件默认跳过（`--overwrite` 覆盖）；单文件失败自动重试且不中断其余任务。
 - 支持 `#` 注释行与空行；依赖 `requests`。
+
+### 番茄小说搜索下载（仅供学习研究）
+
+参考开源项目 Tomato-Novel-Downloader / fanqie-novel-download 的公开实现：解析书籍页
+`__INITIAL_STATE__` 拿书名/作者/简介，经目录接口取分卷章节，抓取章节页内嵌正文；
+正文中的字体混淆（随机 PUA 码位）通过 fontTools 提取字形轮廓、与系统中文字体做
+形状匹配还原，映射按字体哈希缓存。支持 TXT/EPUB 输出与章节范围选择。
+
+```powershell
+# 搜索
+python -m file_tools.core.fanqie_novel search 十日终焉
+
+# 下载（书籍 ID 或书页链接），输出 TXT
+python -m file_tools.core.fanqie_novel download 7143038691944959011 -o novel_downloads
+
+# 指定格式与章节范围
+python -m file_tools.core.fanqie_novel download 7143038691944959011 --format epub --range 1-100
+```
+
+- 可视化界面「番茄小说下载」页：搜索 → 双击选中 → 选格式/范围 → 下载。
+- 字体反混淆依赖 `fonttools`/`brotli`（已在 requirements），首次匹配需构建字形
+  索引（缓存后秒级）；还原率约 98%，个别形近字可能仍误配。
+- 本功能仅供学习研究网络爬虫与字体反混淆技术，请尊重作者版权，勿用于商业用途。
 
 ## 归档：archive 分支
 
