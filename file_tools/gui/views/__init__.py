@@ -5,6 +5,7 @@ from .download_view import DownloadView
 from .grab_view import GrabView
 from .image_view import ImageView
 from .media_view import MediaView
+from .novel_view import NovelView
 from .suffix_view import SuffixView
 
-VIEW_CLASSES = (ImageView, MediaView, GrabView, DownloadView, SuffixView)
+VIEW_CLASSES = (ImageView, MediaView, GrabView, DownloadView, SuffixView, NovelView)

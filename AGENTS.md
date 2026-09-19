@@ -49,6 +49,13 @@
 - 独立入口：`python -m file_tools.core.suffix_manager {add,remove,delete} TARGET --marker MARKER [--recursive] [--dry-run]`。
 - 目标名冲突跳过；删除/重命名均有预览语义。
 
+### `file_tools/core/fanqie_novel.py`
+
+- 番茄小说搜索下载（仅供学习研究）：书页 `__INITIAL_STATE__` 取书籍信息，目录接口 `api/reader/directory/detail` 取分卷章节，正文来自 `fanqienovel.com/reader/{item_id}` 页面内嵌的 `reader.chapterData.content`。
+- 正文 PUA 字体混淆：`get_font_map()` 下载页面 @font-face 指向的混淆字体，`_match_font_map()` 用 fontTools 提取字形轮廓、与 `_REFERENCE_FONTS` 系统字体（msyh/simhei）做归一化 Chamfer 匹配，配合 `COMMON_CHARS` 常用字先验；映射按字体内容哈希缓存到临时目录，参考字形索引也有 npz 磁盘缓存。
+- 输出 TXT/EPUB（`_write_txt`/`_write_epub`，EPUB 用标准库 zipfile）；支持章节范围 `--range`；GUI 视图 `novel_view.py` 提供搜索列表与下载表单。
+- 独立入口：`python -m file_tools.core.fanqie_novel {search,download}`。
+
 ### `file_tools/core/download_images.py`
 
 - 由根目录独立脚本改造并入：从 CSV（第一列）或 TXT（每行）读取图片 URL，支持 `#` 注释与空行。
@@ -61,12 +68,12 @@
 - `theme.py`：`enable_dpi_awareness()` 必须在创建 Tk 之前调用（进程级 DPI 感知，否则窗口和文件对话框在高分屏上模糊），`setup_theme()` 计算缩放比例并配置字体与 ttk 样式；所有尺寸经过 `scale()` 换算，新增控件不要写死像素。
 - `app.py` `main()`：创建根窗口后先 `withdraw()`，构建与居中完成后再 `deiconify()` 一次性显示——防止启动时“先小窗后放大”的闪烁，勿改动此顺序。
 - `runner.py`：任务在后台线程执行，print 经队列交给主线程，同一时间只允许一个任务；`submit()` 支持可选 `on_done(message, succeeded)` 完成回调（主线程执行，用于视图刷新嗅探结果）。
-- `views/`：每个工具一个视图类（ID/TITLE/SUBTITLE + `build()` + `_run()`），在 `views/__init__.py` 注册；核心模块在 worker 内懒导入。`grab_view` 为两段式：嗅探 → 资源表格（勾选/全选/预览/复制链接，双击行预览）→ 下载选中；`widgets.py` 的表单辅助照常复用。
+- `views/`：每个工具一个视图类（ID/TITLE/SUBTITLE + `build()` + `_run()`），在 `views/__init__.py` 注册；核心模块在 worker 内懒导入。`grab_view` 为两段式：嗅探 → 资源表格（勾选/全选/预览/复制链接，双击行预览）→ 下载选中；`novel_view` 为搜索列表 + 下载表单（格式/章节范围/代理）；`widgets.py` 的表单辅助照常复用。
 - 入口：`python -m file_tools.gui`、交互菜单选项 6、`FileTools.exe`。
 
 ### `file_tools/selftest.py` 与 `build_exe.py`
 
-- `python -m file_tools.selftest`（或 `FileTools.exe --selftest`）在当前环境冒烟测试五项核心工具（media_grab 用本地 HTTP 服务器测试嗅探/合并/AES 解密/ffmpeg 抽帧预览；download_images 用本地服务器测试下载，均不依赖外网），全部通过退出码 0。
+- `python -m file_tools.selftest`（或 `FileTools.exe --selftest`）在当前环境冒烟测试六项核心工具（media_grab 用本地 HTTP 服务器测试嗅探/合并/AES 解密/ffmpeg 抽帧预览；download_images 用本地服务器测试下载；fanqie_novel 仅离线测试纯函数，均不依赖外网），全部通过退出码 0。
 - `python build_exe.py` 用 PyInstaller 打包 GUI 为 `dist/FileTools/FileTools.exe`（目录模式，`--onefile` 为单文件）；`--collect-all imageio_ffmpeg` 把 ffmpeg 打进产物；构建前需 `pip install pyinstaller`。
 
 ## 环境与分支
