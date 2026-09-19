@@ -56,6 +56,7 @@ class App:
         self.views = {cls.ID: cls(self) for cls in VIEW_CLASSES}
         self._nav_items: dict[str, NavItem] = {}
         self._run_buttons: list[ttk.Button] = []
+        self._notify_job: str | None = None
 
         root.title(APP_NAME)
         root.minsize(scale(920), scale(660))
@@ -245,15 +246,37 @@ class App:
     def register_run_button(self, button: ttk.Button) -> None:
         self._run_buttons.append(button)
 
-    def submit(self, title: str, button: ttk.Button, worker, on_done=None) -> None:
+    def notify(self, message: str, *, error: bool = False) -> None:
+        """非阻断提示：写入状态栏与运行日志，不弹窗（用于参数校验/轻量操作反馈）。"""
+        self._set_status(
+            COLORS["status_fail"] if error else COLORS["status_busy"], message
+        )
+        self._append_log(f"{message}\n", tag="error" if error else None)
+        if hasattr(self, "_notify_job") and self._notify_job is not None:
+            try:
+                self.root.after_cancel(self._notify_job)
+            except tk.TclError:
+                pass
+        self._notify_job = self.root.after(
+            4000, self._notify_expire
+        )
+
+    def _notify_expire(self) -> None:
+        self._notify_job = None
+        if not self.runner.busy:
+            self._set_status(COLORS["status_idle"], "就绪")
+
+    def submit(self, title: str, button: ttk.Button, worker, on_done=None) -> bool:
+        """提交后台任务；返回 False 表示已有任务在执行、本次未启动。"""
         if not self.runner.submit(title, worker, on_done=on_done):
-            messagebox.showinfo("提示", "已有任务在执行，请等待其完成。")
-            return
+            self.notify("已有任务在执行，请等待其完成。")
+            return False
         for run_button in self._run_buttons:
             run_button.state(["disabled"])
         self._progress.pack(side="right", padx=scale(14), pady=scale(8))
         self._progress.start(16)
         self._set_status(COLORS["status_busy"], f"正在执行：{title}…")
+        return True
 
     def _poll(self) -> None:
         result = self.runner.poll()
@@ -266,6 +289,12 @@ class App:
             run_button.state(["!disabled"])
         self._progress.stop()
         self._progress.pack_forget()
+        if self._notify_job is not None:
+            try:
+                self.root.after_cancel(self._notify_job)
+            except tk.TclError:
+                pass
+            self._notify_job = None
         self._append_log(f"\n{message}\n", tag="success" if succeeded else "error")
         summary = (message or "").splitlines()[0]
         if succeeded:

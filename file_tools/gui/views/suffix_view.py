@@ -1,7 +1,7 @@
 """文件名标记/后缀管理视图（合并原 .1 后缀与删除副本工具）。"""
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, ttk
 
 from ..theme import scale
 from ..widgets import (
@@ -72,7 +72,7 @@ class SuffixView(ToolView):
     def _run(self) -> None:
         target = self.target.get().strip().strip('"')
         if not target:
-            messagebox.showwarning("缺少参数", "请先选择目标目录。")
+            self.app.notify("请先选择目标目录。", error=True)
             return
         marker = self.marker.get()
         operation = self.operation.get()

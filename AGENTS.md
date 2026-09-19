@@ -37,7 +37,7 @@
 - 参考猫抓插件的网页媒体嗅探下载，识别范围对齐猫抓后缀表（`MEDIA_SUFFIXES`，视频/音频/清单 30 余种）；直连扫描标签属性（`src`/`href`/`data-*`）、JSON 字段（`url`/`source`/`file`）与裸 URL，还原 `\/`、`\u002F` 转义，相对地址经 `urljoin` 补全。
 - **双嗅探模式**（CLI `--mode {direct,browser}` / GUI 单选；默认直连）：
   - 直连模式：requests 直接抓页面，失败自动 curl_cffi 浏览器指纹回退；仍失败时报错并提示可改用浏览器模式（不自动切换）。
-  - 浏览器模式：`browser_sniff.py` 启动本机 Chrome/Edge（独立临时配置 + CDP），用户在浏览器里播放视频，工具经 Network 事件捕获媒体地址（含完整请求头），关闭浏览器窗口结束嗅探；失败只报错、不引导回直连。
+  - 浏览器模式：`browser_sniff.py` 启动本机 Chrome/Edge（独立临时配置 + CDP），用户在浏览器里播放视频，工具经 Network 事件捕获媒体地址（含完整请求头）；GUI 点「完成嗅探」按钮（stop_event）或关闭浏览器窗口即结束嗅探；失败只报错、不引导回直连。
 - **不提供代理功能**（已整体移除）。下载走多级传输回退 `_TransportChain`（按主机记忆首次成功的方式）：直连 requests → curl_cffi 指纹 → SNI 精简（TLS SNI 用父域、Host 不变，用于被 SNI 阻断的 CDN；证书校验降级会在日志明确提示）→ 浏览器引擎（`BrowserHTTPSession` 页面内 fetch + CDP Fetch 域拦截响应 + IO 流式读出，请求上下文与真实播放器一致）。
 - 内置 bilibili 适配：页面 `__INITIAL_STATE__` 取 bvid/cid/title，调 `x/player/playurl`（无需 wbi）拿 DASH 流，产出 `dash-video`/`dash-audio` 资源（带清晰度标签），下载主 CDN 失败自动换 `backupUrl`；选中视频+音频后用内置 ffmpeg 合流为以视频标题命名的 MP4。
 - m3u8：主播放列表自动选最高带宽，分段并发下载合并（瞬时 5xx/限流失败的分段收尾串行补抓两轮）；AES-128 分段（`EXT-X-KEY`）依赖 `pycryptodome`/`cryptography`（懒导入）；m3u8 输出文件名优先用页面标题。

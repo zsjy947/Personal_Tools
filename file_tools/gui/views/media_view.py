@@ -2,7 +2,7 @@
 
 from pathlib import Path
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, ttk
 
 from ..theme import scale
 from ..widgets import (
@@ -110,10 +110,10 @@ class MediaView(ToolView):
         dry_run = self.dry_run.get()
 
         if not source:
-            messagebox.showwarning("缺少参数", "请先选择输入路径。")
+            self.app.notify("请先选择输入路径。", error=True)
             return
         if is_dir and not suffix_text:
-            messagebox.showwarning("缺少参数", "目录模式必须填写筛选后缀，例如 jpeg ts woff2。")
+            self.app.notify("目录模式必须填写筛选后缀，例如 jpeg ts woff2。", error=True)
             return
         recursive = self.recursive.get()
         overwrite = self.overwrite.get()

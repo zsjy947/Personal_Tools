@@ -1,7 +1,7 @@
 """图片批量下载视图。"""
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, ttk
 
 from ..theme import scale
 from ..widgets import (
@@ -77,14 +77,14 @@ class DownloadView(ToolView):
     def _run(self) -> None:
         list_path = self.list_path.get().strip().strip('"')
         if not list_path:
-            messagebox.showwarning("缺少参数", "请先选择 CSV/TXT 链接列表。")
+            self.app.notify("请先选择 CSV/TXT 链接列表。", error=True)
             return
         try:
             concurrency = int(self.concurrency.get().strip())
         except ValueError:
             concurrency = 0
         if concurrency <= 0:
-            messagebox.showwarning("参数无效", "并发数必须是正整数。")
+            self.app.notify("并发数必须是正整数。", error=True)
             return
         output_dir = self.output_dir.get().strip().strip('"') or "downloaded_images"
         overwrite = self.overwrite.get()
