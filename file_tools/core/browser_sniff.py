@@ -17,6 +17,7 @@
 只有真实浏览器能连通的站点下载。
 """
 
+import atexit
 import base64
 import json
 import shutil
@@ -155,19 +156,26 @@ class CDPClient:
 
         threading.Thread(target=reader, daemon=True).start()
 
-    def send(self, method: str, **params) -> None:
+    def send(self, method: str, session_id: str | None = None, **params) -> None:
         """发送命令但不等待响应（用于 Page.navigate 等可能与 Fetch 拦截互锁的调用）。"""
+        payload: dict = {"id": 0, "method": method, "params": params}
+        if session_id:
+            payload["sessionId"] = session_id
         with self._send_lock:
-            self.ws.send(json.dumps({"id": 0, "method": method, "params": params}))
+            self.ws.send(json.dumps(payload))
 
-    def call(self, method: str, timeout: float = 30, **params) -> dict:
+    def call(self, method: str, timeout: float = 30, session_id: str | None = None,
+             **params) -> dict:
         with self._send_lock:
             self.seq += 1
             rid = self.seq
             waiter: "queue.Queue[dict]" = self._queue_module.Queue()
             with self._lock:
                 self._waiters[rid] = waiter
-            self.ws.send(json.dumps({"id": rid, "method": method, "params": params}))
+            payload: dict = {"id": rid, "method": method, "params": params}
+            if session_id:
+                payload["sessionId"] = session_id
+            self.ws.send(json.dumps(payload))
         try:
             message = waiter.get(timeout=timeout)
         except Exception:
@@ -355,6 +363,56 @@ class BrowserSession:
         self.close()
 
 
+# -------- 共享嗅探浏览器（嗅探结束后保留，预览复用同一窗口开新标签页） --------
+
+_shared_session: "BrowserSession | None" = None
+_shared_tabs_cdp: "CDPClient | None" = None
+
+
+def _close_shared() -> None:
+    """回收共享嗅探浏览器；进程退出时由 atexit 统一调用。"""
+    global _shared_session, _shared_tabs_cdp
+    if _shared_tabs_cdp is not None:
+        _shared_tabs_cdp.close()
+        _shared_tabs_cdp = None
+    if _shared_session is not None:
+        _shared_session.close()
+        _shared_session = None
+
+
+atexit.register(_close_shared)
+
+
+def _stash_shared_session(session: BrowserSession) -> None:
+    global _shared_session, _shared_tabs_cdp
+    _close_shared()  # 上一次嗅探留下的浏览器先回收
+    # 标签页管理走浏览器级调试端点（Target.createTarget 是浏览器域命令）
+    try:
+        version = requests.get(
+            f"http://127.0.0.1:{session.port}/json/version", timeout=5
+        ).json()
+        _shared_tabs_cdp = CDPClient(version["webSocketDebuggerUrl"])
+    except (requests.RequestException, ValueError, RuntimeError, KeyError):
+        _shared_tabs_cdp = None
+    _shared_session = session
+
+
+def open_tab_in_shared_browser(url: str) -> bool:
+    """在嗅探时打开的浏览器同一窗口开新标签页；浏览器已关闭返回 False。"""
+    if _shared_session is None or _shared_tabs_cdp is None:
+        return False
+    if not _shared_session.alive():
+        _close_shared()
+        return False
+    try:
+        _shared_tabs_cdp.call(
+            "Target.createTarget", url=url, newWindow=False, timeout=10
+        )
+        return True
+    except Exception:  # noqa: BLE001 - 开标签失败由调用方回退系统浏览器
+        return False
+
+
 class MediaRecorder:
     """从 CDP 网络事件中收集媒体地址（可离线测试的纯逻辑）。"""
 
@@ -413,6 +471,41 @@ class MediaRecorder:
         return list(self.records.values())
 
 
+# 自动播放：只点播“暂停中”的视频（用户正在看的视频不受影响），被策略拒绝
+# 时才静音重试。开播窗口过后不再打扰，由用户手动控制。
+AUTO_PLAY_INTERVAL = 8.0
+AUTO_PLAY_WINDOW = 120.0
+
+_AUTO_PLAY_JS = (
+    "(async()=>{const vids=[...document.querySelectorAll('video')];"
+    "if(!vids.length)return 'no-video';const out=[];"
+    "for(const v of vids){if(v.paused){"
+    "try{await v.play();out.push('ok');}"
+    "catch(e){if(e.name==='NotAllowedError'){"
+    "try{v.muted=true;await v.play();out.push('ok-muted');}catch(e2){out.push('err');}}"
+    "else{out.push('err');}}}}"
+    "return out.join(',')||'playing';})()"
+)
+
+
+def _try_auto_play(cdp: "CDPClient", sessions: dict[str, str]) -> bool:
+    """在每个页面/iframe 会话里尝试播放暂停中的视频；有成功返回 True。"""
+    played = False
+    for sid in ["", *sessions]:
+        try:
+            result = cdp.call(
+                "Runtime.evaluate", expression=_AUTO_PLAY_JS,
+                awaitPromise=True, returnByValue=True, timeout=8,
+                session_id=sid or None,
+            )
+            value = result.get("result", {}).get("value")
+        except Exception:  # noqa: BLE001 - 单个会话失败不影响其他
+            continue
+        if isinstance(value, str) and "ok" in value:
+            played = True
+    return played
+
+
 def capture_via_browser(
     url: str,
     *,
@@ -421,21 +514,34 @@ def capture_via_browser(
     on_status=None,
     on_ready=None,
     stop_event: "threading.Event | None" = None,
+    keep_open: bool = False,
 ) -> tuple[list[CapturedMedia], str, str]:
     """打开浏览器访问 url，捕获网络层出现的媒体地址。
 
+    自动化：页面就绪后周期性尝试播放暂停中的视频（开播窗口内），并在
+    Target.setAutoAttach 下把跨域 iframe / 弹出的新标签一并纳入捕获
+    （flatten 模式，事件与主页面共用一条 WebSocket）。
     结束条件：stop_event 被置位（GUI「完成嗅探」按钮）、用户关闭浏览器
     （进程退出），或达到 max_seconds。
+    keep_open=True 且浏览器还开着时，结束嗅探不关闭浏览器，留给预览在
+    同一窗口开新标签页（进程退出时统一回收）。
     on_ready(session, cdp)：浏览器就绪后的回调（自动化测试注入交互用）。
     返回 (捕获列表, 页面标题, 最终页面地址)。
     """
     stop = stop_event or threading.Event()
     recorder = MediaRecorder()
-    with BrowserSession(url, visible=True) as session:
+    session = BrowserSession(url, visible=True)
+    try:
         cdp = session.attach_page()
         cdp.call("Network.enable")
         cdp.call("Page.enable")
         cdp.call("Runtime.enable")
+        # 跨域 iframe（OOPIF）与页面弹出的新标签走独立会话，自动挂上来一起捕获
+        try:
+            cdp.call("Target.setAutoAttach", autoAttach=True,
+                     waitForDebuggerOnStart=False, flatten=True)
+        except Exception:  # noqa: BLE001 - 老内核不支持时退化为仅主页面
+            pass
         if on_ready:
             try:
                 on_ready(session, cdp)
@@ -443,20 +549,53 @@ def capture_via_browser(
                 pass
         if on_status:
             on_status(
-                "浏览器已打开：请在浏览器中播放视频进行捕获；"
-                "抓够后点「完成嗅探」（或关闭浏览器窗口）结束并返回列表。"
+                "浏览器已打开：将自动尝试播放页面视频（无反应请手动点播放）；"
+                "点「完成嗅探」结束并返回列表（浏览器保持打开，预览复用该窗口）。"
             )
         deadline = time.time() + max_seconds
+        started_at = time.time()
         announced: set[str] = set()
+        extra_sessions: dict[str, str] = {}
+        next_auto_play = 0.0
+        auto_play_announced = False
         last_title_check = 0.0
         while session.alive() and time.time() < deadline and not stop.is_set():
             for event in cdp.drain_events():
+                method = event.get("method")
+                if method == "Target.attachedToTarget":
+                    params = event.get("params", {})
+                    info = params.get("targetInfo", {})
+                    sid = params.get("sessionId") or ""
+                    if info.get("type") in ("page", "iframe") and sid:
+                        extra_sessions[sid] = info.get("url", "")
+                        try:
+                            cdp.call("Network.enable", session_id=sid)
+                            cdp.call("Runtime.enable", session_id=sid)
+                            cdp.call("Target.setAutoAttach", session_id=sid,
+                                     autoAttach=True, waitForDebuggerOnStart=False,
+                                     flatten=True)
+                        except Exception:  # noqa: BLE001
+                            extra_sessions.pop(sid, None)
+                    continue
+                if method == "Target.detachedFromTarget":
+                    sid = event.get("params", {}).get("sessionId") or ""
+                    extra_sessions.pop(sid, None)
+                    continue
                 _consume_event(recorder, event)
             for record in recorder.ordered():
                 if record.url not in announced:
                     announced.add(record.url)
                     if on_capture:
                         on_capture(record)
+            if (
+                time.time() - started_at <= AUTO_PLAY_WINDOW
+                and time.time() >= next_auto_play
+            ):
+                next_auto_play = time.time() + AUTO_PLAY_INTERVAL
+                if _try_auto_play(cdp, extra_sessions) and not auto_play_announced:
+                    auto_play_announced = True
+                    if on_status:
+                        on_status("已自动开始播放页面视频，捕获进行中…")
             if time.time() - last_title_check > 3:
                 last_title_check = time.time()
                 _refresh_page_info(cdp, recorder)
@@ -465,6 +604,14 @@ def capture_via_browser(
         for event in cdp.drain_events():
             _consume_event(recorder, event)
         _refresh_page_info(cdp, recorder)
+    finally:
+        if keep_open and session.alive():
+            # 浏览器保持打开，预览将在同一窗口开新标签页（退出时统一回收）
+            _stash_shared_session(session)
+            if on_status:
+                on_status("嗅探结束，浏览器保持打开：预览将在该窗口的新标签页播放。")
+        else:
+            session.close()
     return recorder.ordered(), recorder.page_title, recorder.page_url
 
 
