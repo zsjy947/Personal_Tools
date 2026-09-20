@@ -294,19 +294,21 @@ def _install_round_indicators(style: ttk.Style) -> None:
     _INDICATOR_IMAGES.extend(states.values())
     _INDICATOR_IMAGES.extend(check_states.values())
 
+    # 状态按“第一个匹配生效”：selected 必须排在 active 之前，
+    # 否则悬停已选中项时圆点/对勾会被悬停圈盖掉
     style.element_create(
         "FileTools.radio", "image", states["off"],
-        ("active", states["hover"]),
-        ("selected", states["on"]),
-        ("disabled", states["off_dis"]),
         ("disabled selected", states["on_dis"]),
+        ("disabled", states["off_dis"]),
+        ("selected", states["on"]),
+        ("active", states["hover"]),
     )
     style.element_create(
         "FileTools.check", "image", check_states["off"],
-        ("active", check_states["hover"]),
-        ("selected", check_states["on"]),
-        ("disabled", check_states["off_dis"]),
         ("disabled selected", check_states["on_dis"]),
+        ("disabled", check_states["off_dis"]),
+        ("selected", check_states["on"]),
+        ("active", check_states["hover"]),
     )
     style.layout(
         "Option.TRadiobutton",
