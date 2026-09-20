@@ -289,8 +289,10 @@ class GrabView(ToolView):
             if audios:
                 default.append(audios[0])
         elif resources:
+            m3u8s = [i for i, r in enumerate(resources) if r.kind == "m3u8"]
+            # 多个播放列表时默认选体积估算最大的（通常是主视频的最高清晰度）
             default.append(
-                next((i for i, r in enumerate(resources) if r.kind == "m3u8"), 0)
+                max(m3u8s, key=lambda i: resources[i].size or 0) if m3u8s else 0
             )
         for index in default:
             iid = self.tree.get_children()[index]
@@ -314,14 +316,19 @@ class GrabView(ToolView):
             if mode == MODE_BROWSER:
                 from ...core.media_grab import sniff_media_browser
 
-                resources = sniff_media_browser(url, stop_event=stop_event)
+                resources = sniff_media_browser(
+                    url, stop_event=stop_event, keep_open=True
+                )
                 self._sniffed = resources
                 if not resources:
                     return (
                         "浏览器嗅探结束，未捕获到媒体资源："
                         "请确认已在浏览器中播放视频后重试。"
                     )
-                return f"浏览器嗅探完成：共 {len(resources)} 个资源，请在列表中勾选后下载。"
+                return (
+                    f"浏览器嗅探完成：共 {len(resources)} 个资源。"
+                    "浏览器保持打开，预览将在其新标签页播放；请在列表中勾选后下载。"
+                )
 
             from ...core.media_grab import sniff_media
 
@@ -341,7 +348,7 @@ class GrabView(ToolView):
             if succeeded:
                 self._fill_tree(self._sniffed)
                 self.result_hint_right.config(
-                    text="双击行预览（当前模式在浏览器中播放）"
+                    text="双击行预览（在嗅探浏览器的新标签页播放）"
                     if mode == MODE_BROWSER else "双击行软件内预览"
                 )
 
@@ -352,10 +359,10 @@ class GrabView(ToolView):
             self.finish_button.state(["!disabled"])
 
     def _finish_sniff(self) -> None:
-        """提前结束浏览器嗅探：置位停止事件，浏览器窗口由捕获线程自动回收。"""
+        """提前结束浏览器嗅探：置位停止事件；浏览器保持打开供预览复用。"""
         if self._sniff_stop is not None and not self._sniff_stop.is_set():
             self._sniff_stop.set()
-            self.app.notify("正在结束浏览器嗅探…")
+            self.app.notify("正在结束嗅探（浏览器保持打开）…")
 
     def _run(self) -> None:
         if not self._resources:

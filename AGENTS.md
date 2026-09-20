@@ -37,12 +37,14 @@
 - 参考猫抓插件的网页媒体嗅探下载，识别范围对齐猫抓后缀表（`MEDIA_SUFFIXES`，视频/音频/清单 30 余种）；直连扫描标签属性（`src`/`href`/`data-*`）、JSON 字段（`url`/`source`/`file`）与裸 URL，还原 `\/`、`\u002F` 转义，相对地址经 `urljoin` 补全。
 - **双嗅探模式**（CLI `--mode {direct,browser}` / GUI 单选；默认直连）：
   - 直连模式：requests 直接抓页面，失败自动 curl_cffi 浏览器指纹回退；仍失败时报错并提示可改用浏览器模式（不自动切换）。
-  - 浏览器模式：`browser_sniff.py` 启动本机 Chrome/Edge（独立临时配置 + CDP），用户在浏览器里播放视频，工具经 Network 事件捕获媒体地址（含完整请求头）；GUI 点「完成嗅探」按钮（stop_event）或关闭浏览器窗口即结束嗅探；失败只报错、不引导回直连。
+  - 浏览器模式：`browser_sniff.py` 启动本机 Chrome/Edge（独立临时配置 + CDP），工具自动尝试播放页面视频（开播窗口 2 分钟内每 8 秒对暂停中的 video 执行 play，用户手动播放不受影响），并经 Network 事件捕获媒体地址（含完整请求头）；`Target.setAutoAttach`（flatten）把跨域 iframe/弹出的新标签一并纳入捕获；GUI 点「完成嗅探」按钮（stop_event）或关闭浏览器窗口即结束嗅探；失败只报错、不引导回直连。
+- **嗅探浏览器驻留与预览复用**：GUI 嗅探用 `keep_open=True`，点「完成嗅探」后浏览器不关闭（`_stash_shared_session` 驻留，atexit 统一回收；用户手动关掉窗口则立即回收）；`open_tab_in_shared_browser()` 让浏览器模式预览在同一窗口开新标签页（浏览器级 CDP `Target.createTarget`），浏览器已关才回退系统浏览器。
+- **HLS 主视频识别**（`_m3u8_overview`）：嗅探结束自动取回每个 m3u8 解析，把分辨率（AES 分段先解密再喂内置 `ffmpeg -i`，`parse_ffmpeg_resolution`）与时长写进 label（如 `1280x720 · 约110 分钟`，主清单标 `主清单 · 1080p/720p/360p`），体积估算（首段+中段采样 × 段数，`size_estimate=True`）进“大小”列显示带 ≈——很多站点主视频是无后缀带令牌的播放列表（如 `…/index.txt?t=…`），不识别就和预览小视频分不开；GUI 默认勾选体积估算最大的 m3u8。
 - **不提供代理功能**（已整体移除）。下载走多级传输回退 `_TransportChain`（按主机记忆首次成功的方式）：直连 requests → curl_cffi 指纹 → SNI 精简（TLS SNI 用父域、Host 不变，用于被 SNI 阻断的 CDN；证书校验降级会在日志明确提示）→ 浏览器引擎（`BrowserHTTPSession` 页面内 fetch + CDP Fetch 域拦截响应 + IO 流式读出，请求上下文与真实播放器一致）。
 - 内置 bilibili 适配：页面 `__INITIAL_STATE__` 取 bvid/cid/title，调 `x/player/playurl`（无需 wbi）拿 DASH 流，产出 `dash-video`/`dash-audio` 资源（带清晰度标签），下载主 CDN 失败自动换 `backupUrl`；选中视频+音频后用内置 ffmpeg 合流为以视频标题命名的 MP4。
 - m3u8：主播放列表自动选最高带宽，分段并发下载合并（瞬时 5xx/限流失败的分段收尾串行补抓两轮）；AES-128 分段（`EXT-X-KEY`）依赖 `pycryptodome`/`cryptography`（懒导入）；m3u8 输出文件名优先用页面标题。
 - 资源统一为 `MediaResource`（url/suffix/kind/label/size/title/headers/fallback_urls）；`sniff_media()` 直连嗅探（`probe=True` 时并发 HEAD 探测体积，上限 `PROBE_LIMIT`）、`sniff_media_browser()` 浏览器嗅探、`download_resources()` 下载选中资源（GUI 用）、`grab_media()` 保留序号流程（CLI/菜单用，先 `--list` 看明细再 `--pick`）。
-- 预览分模式：直连模式用 `capture_preview_frames()`（内置 ffmpeg 抽帧，`gui/preview.py` 软件内缩略图，音频流只解析流信息）；浏览器模式用 `open_external_preview()`——本地 127.0.0.1 预览代理（`_PreviewProxy`，空闲 30 分钟自动关闭），播放页在系统浏览器打开，m3u8 经代理改写后由内置 `data/hls.min.js`（hls.js v1.5.20，Apache-2.0）播放，代理转发自动走多级传输回退。
+- 预览分模式：直连模式用 `capture_preview_frames()`（内置 ffmpeg 抽帧，`gui/preview.py` 软件内缩略图，音频流只解析流信息）；浏览器模式用 `open_external_preview()`——本地 127.0.0.1 预览代理（`_PreviewProxy`，空闲 30 分钟自动关闭），优先在嗅探时打开的浏览器同一窗口开新标签页（回退系统浏览器打开），m3u8 经代理改写后由内置 `data/hls.min.js`（hls.js v1.5.20，Apache-2.0）播放——hls 播放页必须内联 `<script src="/hls.js">`（缺失则 Hls 未定义、预览放不出，selftest 有断言），代理转发自动走多级传输回退。
 - 独立入口：`python -m file_tools.core.media_grab URL [-o OUTPUT] [--mode {direct,browser}] [--list] [--probe] [--pick N ...] [--all] [--no-mp4] [--referer URL] [--max-capture-seconds N]`。
 
 ### `file_tools/core/browser_sniff.py`
@@ -50,8 +52,8 @@
 - 浏览器模式的全部 CDP 机制（依赖 `websocket-client`）：
   - `find_browser_exe()` 按 Chrome→Edge 常见路径查找浏览器。
   - `BrowserSession`：独立临时用户数据目录（不碰用户真实配置/Cookie/扩展）+ 随机 127.0.0.1 调试端口 + `--no-first-run` 等安全参数；结束即终止进程并删除临时目录；WebSocket 用 `suppress_origin` 免 `--remote-allow-origins` 宽松开关。
-  - `CDPClient`：单读线程分发（响应按 id 路由、事件进列表）；`send()` 用于可能与 Fetch 拦截互锁的 `Page.navigate`（只发不等）。
-  - `capture_via_browser()`：Network 事件 → `MediaRecorder`（纯逻辑、可离线测试）按后缀或 MIME 筛媒体地址（跳过 `blob:`/`data:`），录制完整请求头与页面标题；`on_ready(session, cdp)` 钩子供自动化测试注入交互。
+  - `CDPClient`：单读线程分发（响应按 id 路由、事件进列表）；`call()`/`send()` 支持 `session_id`（flatten 自动挂载的子会话）；`send()` 用于可能与 Fetch 拦截互锁的 `Page.navigate`（只发不等）。
+  - `capture_via_browser()`：Network 事件 → `MediaRecorder`（纯逻辑、可离线测试）按后缀或 MIME 筛媒体地址（跳过 `blob:`/`data:`），录制完整请求头与页面标题；周期性对暂停中的视频自动播放（`_AUTO_PLAY_JS`）；`keep_open=True` 结束后浏览器经 `_stash_shared_session` 驻留、`open_tab_in_shared_browser()` 复用；`on_ready(session, cdp)` 钩子供自动化测试注入交互。
   - `BrowserHTTPSession`：伪装成 requests.Session 的浏览器引擎传输（页面内 fetch + 响应虹吸）；无头启动但覆盖 UA（去掉 HeadlessChrome 字样防 CDN 识别），先暖场导航到资源页面再取资源；CDP 事件按 URL 匹配，调用必须串行（`_TransportChain` 已加锁）。
 
 ### `file_tools/core/suffix_manager.py`

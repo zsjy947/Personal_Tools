@@ -96,6 +96,7 @@ class MediaResource:
     page_url: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
     fallback_urls: list[str] = field(default_factory=list)  # 主地址失败时依次尝试
+    size_estimate: bool = False  # size 为采样估算值（HLS），size_text 显示带 ≈
 
     @property
     def kind_text(self) -> str:
@@ -108,7 +109,10 @@ class MediaResource:
 
     @property
     def size_text(self) -> str:
-        return _format_size(self.size)
+        text = _format_size(self.size)
+        if self.size_estimate and self.size:
+            return f"≈{text}"
+        return text
 
 
 def _format_size(size: int | None) -> str:
@@ -314,14 +318,146 @@ def _kind_of(url: str) -> str:
     return "media"
 
 
+def parse_ffmpeg_resolution(stderr_text: str) -> str | None:
+    """从 ffmpeg -i 的探测输出里取第一个视频流的分辨率（如 1920x1080）。"""
+    for line in stderr_text.splitlines():
+        if "Video:" not in line:
+            continue
+        match = re.search(r"\b(\d{2,5})x(\d{2,5})\b", line)
+        if match:
+            return f"{match.group(1)}x{match.group(2)}"
+    return None
+
+
+def _probe_segment(
+    chain: "_TransportChain", resource: MediaResource, payload: "MediaPlaylist",
+    index: int,
+) -> tuple[bytes | None, int]:
+    """取一个分段（AES 先解密）用于分辨率探测/体积估算，返回 (字节, 线上大小)。"""
+    try:
+        response = chain.get(
+            payload.segments[index], timeout=25, headers=resource.headers
+        )
+        length = response.headers.get("Content-Length") or response.headers.get(
+            "content-length"
+        )
+        wire = (
+            int(length)
+            if isinstance(length, str) and length.isdigit()
+            else len(response.content)
+        )
+        data = response.content
+    except Exception:  # noqa: BLE001 - 探测是尽力而为
+        return None, 0
+    if payload.key is not None and payload.key.method == "AES-128" and payload.key.uri:
+        try:
+            key_data = chain.get(
+                payload.key.uri, timeout=25, headers=resource.headers
+            ).content
+            # HLS 规定 KEY 无 IV 时用媒体序列号（64 位）作 IV
+            iv = payload.key.iv or ((payload.media_sequence + index) % (1 << 64)).to_bytes(16, "big")
+            data = _decrypt_aes128(data, key_data, iv)
+        except Exception:  # noqa: BLE001 - 解密不可用：放弃分辨率，体积仍按线上大小
+            return None, wire
+    if payload.init_uri:
+        try:
+            init_data = chain.get(
+                payload.init_uri, timeout=25, headers=resource.headers
+            ).content
+            data = init_data + (data or b"")
+        except Exception:  # noqa: BLE001
+            pass
+    return (data or None), wire
+
+
+def _ffmpeg_probe_resolution(data: bytes | None) -> str | None:
+    """把（解密后的）分段喂给 ffmpeg -i 解析视频分辨率；失败返回 None。"""
+    if not data:
+        return None
+    try:
+        from .media_to_mp4 import find_ffmpeg, run_hidden
+
+        ffmpeg = find_ffmpeg()
+        if not ffmpeg:
+            return None
+        probe = run_hidden(
+            [ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "info", "-i", "pipe:0"],
+            input=data, capture_output=True, timeout=90,
+        )
+        stderr = (probe.stderr or b"").decode("utf-8", errors="replace")
+        return parse_ffmpeg_resolution(stderr)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _m3u8_overview(chain: "_TransportChain", resource: MediaResource) -> None:
+    """识别一个 HLS 播放列表的内容：分辨率/时长写进 label，体积估算写进 size。
+
+    不少站点的播放列表无后缀且带令牌（如 …/index.txt?t=…&e=…），在结果
+    列表里与预览小视频难以区分；识别后用户能一眼认出主视频与清晰度。
+    任何一步失败都保持原样，不影响嗅探结果返回。
+    """
+    try:
+        response = chain.get(resource.url, timeout=25, headers=resource.headers)
+        text = response.text
+        kind, payload = parse_m3u8(text, resource.url)
+    except Exception:  # noqa: BLE001 - 识别是尽力而为
+        return
+    if kind == "master":
+        heights = sorted(
+            {
+                int(variant.resolution.split("x")[1])
+                for variant in payload.variants
+                if getattr(variant, "resolution", None)
+                and "x" in variant.resolution
+                and variant.resolution.split("x")[1].isdigit()
+            },
+            reverse=True,
+        )
+        if heights:
+            resource.label = "主清单 · " + "/".join(f"{h}p" for h in heights)
+        else:
+            resource.label = f"主清单 · {len(payload.variants)} 种清晰度"
+        return
+    segments = payload.segments
+    if not segments:
+        return
+    # 首段同时用于分辨率探测与体积估算
+    seg0_data, seg0_wire = _probe_segment(chain, resource, payload, 0)
+    parts: list[str] = []
+    resolution = _ffmpeg_probe_resolution(seg0_data)
+    if resolution:
+        parts.append(resolution)
+    durations = [float(m.group(1)) for m in re.finditer(r"#EXTINF:([\d.]+)", text)]
+    if durations:
+        parts.append(f"约{round(sum(durations) / 60)} 分钟")
+    if not parts:
+        parts.append(f"{len(segments)} 段")
+    resource.label = " · ".join(parts)
+    # 体积估算：首段 + 中段采样取平均（HLS 分段大小相近），显示在“大小”列
+    samples: list[int] = []
+    if seg0_wire:
+        samples.append(seg0_wire)
+    if len(segments) > 1:
+        _mid_data, mid_wire = _probe_segment(
+            chain, resource, payload, len(segments) // 2
+        )
+        if mid_wire:
+            samples.append(mid_wire)
+    if samples:
+        resource.size = int(sum(samples) / len(samples) * len(segments))
+        resource.size_estimate = True
+
+
 def sniff_media_browser(
     url: str, *, max_seconds: float = 900, referer: str | None = None,
-    stop_event: "threading.Event | None" = None,
+    stop_event: "threading.Event | None" = None, keep_open: bool = False,
 ) -> list[MediaResource]:
     """浏览器模式：打开浏览器访问页面，捕获网络层媒体地址（猫抓式）。
 
     stop_event 置位即提前结束（GUI「完成嗅探」按钮）；浏览器关闭或超时
-    也会结束。失败时直接抛错，不引导回直连模式。
+    也会结束。keep_open=True 时结束嗅探不关闭浏览器，预览复用该窗口。
+    失败时直接抛错，不引导回直连模式。
     """
     from .browser_sniff import capture_via_browser
 
@@ -329,6 +465,7 @@ def sniff_media_browser(
         url,
         max_seconds=max_seconds,
         stop_event=stop_event,
+        keep_open=keep_open,
         on_status=lambda text: print(text),
         on_capture=lambda record: print(
             f"捕获到: [{record.kind}] "
@@ -354,6 +491,17 @@ def sniff_media_browser(
                 headers=headers,
             )
         )
+    # 识别播放列表内容（分段数/时长/体积估算）：主视频常以无后缀带令牌的
+    # m3u8 形式出现，不识别的话用户分不清它和预览小视频
+    playlists = [r for r in resources if r.kind == "m3u8"]
+    if playlists:
+        print(f"正在识别 {len(playlists)} 个播放列表的内容（分段数/时长/体积估算）…")
+        chain = _TransportChain(referer=page_url or url)
+        try:
+            for resource in playlists:
+                _m3u8_overview(chain, resource)
+        finally:
+            chain.close()
     return resources
 
 
@@ -1503,7 +1651,12 @@ class _PreviewProxyHandler(http.server.BaseHTTPRequestHandler):
         referer = (query.get("r") or [""])[0]
         media = _proxy_media_url(url, referer)
         if kind == "hls":
-            element = '<video id="v" controls autoplay playsinline></video>'
+            # hls.js 必须以 script 标签同步加载：缺失时内联脚本里 Hls 未定义，
+            # 预览页只显示占位提示而永远放不出视频
+            element = (
+                '<script src="/hls.js"></script>'
+                '<video id="v" controls autoplay playsinline></video>'
+            )
             script = (
                 "if(Hls.isSupported()){var h=new Hls();"
                 f"h.loadSource({json.dumps(media)});"
@@ -1650,6 +1803,11 @@ def open_external_preview(resource: MediaResource) -> str:
     url = _preview_proxy.player_url(
         resource.url, resource.headers.get("Referer", ""), kind
     )
+    # 嗅探时打开的浏览器还开着：优先在同一窗口开新标签页，不再多开窗口
+    from .browser_sniff import open_tab_in_shared_browser
+
+    if open_tab_in_shared_browser(url):
+        return url
     if not webbrowser.open(url):
         raise RuntimeError(f"无法打开系统浏览器，请手动访问: {url}")
     return url

@@ -245,7 +245,23 @@ def _test_browser_sniff(workdir: Path) -> None:
         is_media_url,
         url_suffix,
     )
-    from .core.media_grab import _parent_host, _rewrite_playlist, parse_m3u8
+    from .core.media_grab import (
+        _parent_host,
+        _rewrite_playlist,
+        parse_ffmpeg_resolution,
+        parse_m3u8,
+    )
+
+    # ffmpeg -i 输出解析分辨率（HLS 清晰度识别用）
+    sample = "\n".join([
+        "Input #0, mpegts, from 'pipe:0':",
+        "  Duration: 00:00:06.00, start: 1.400000, bitrate: 2500 kb/s",
+        "  Stream #0:0[0x100]: Video: h264 (High) ([27][0][0][0] / 0x001B),"
+        " yuv420p, 1920x1080 [SAR 1:1 DAR 16:9], 25 fps",
+        "  Stream #0:1[0x101](und): Audio: aac (LC), 48000 Hz, stereo, fltp, 128 kb/s",
+    ])
+    assert parse_ffmpeg_resolution(sample) == "1920x1080", "ffmpeg 输出分辨率解析不符"
+    assert parse_ffmpeg_resolution("no video line here") is None, "无视频流应返回 None"
 
     # 浏览器探测只查找、不启动
     exe = find_browser_exe()
@@ -325,6 +341,14 @@ def _test_preview_proxy(workdir: Path) -> None:
         player_url = proxy.player_url(resource.url, resource.headers["Referer"], "file")
         page = _requests.get(player_url, timeout=10)
         assert page.status_code == 200 and "video" in page.text, "播放页应包含 video 元素"
+
+        # hls 播放页必须引入 /hls.js（否则页面里 Hls 未定义，永远放不出视频）
+        hls_page = _requests.get(
+            proxy.player_url(f"{base}/index.m3u8", f"{base}/", "hls"), timeout=10
+        )
+        assert hls_page.status_code == 200, "hls 播放页应可访问"
+        assert '<script src="/hls.js"></script>' in hls_page.text, "hls 播放页应引入 hls.js"
+        assert "Hls.isSupported" in hls_page.text, "hls 播放页应包含 hls.js 播放逻辑"
 
         media_url = proxy.player_url(resource.url, resource.headers["Referer"], "file").replace(
             "/player?", "/media?"
