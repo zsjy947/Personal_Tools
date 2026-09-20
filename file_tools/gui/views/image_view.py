@@ -25,11 +25,11 @@ IMAGE_FILETYPES = [
 
 # 下拉框展示文案 -> 传给核心函数的模式编号
 IMAGE_MODES = {
-    "1 方块混淆": "1",
-    "2 行像素混淆": "2",
-    "3 像素混淆": "3",
-    "4 PicEncrypt 行": "4",
-    "5 PicEncrypt 行+列": "5",
+    "方块混淆": "1",
+    "行像素混淆": "2",
+    "像素混淆": "3",
+    "PicEncrypt 行": "4",
+    "PicEncrypt 行+列": "5",
 }
 
 
@@ -163,17 +163,17 @@ class ImageView(ToolView):
             try:
                 numeric_key = float(key)
             except ValueError:
-                self.app.notify("模式 4 和 5 的密钥必须是 0 到 1 之间的数字。", error=True)
+                self.app.notify("PicEncrypt 模式的密钥必须是 0 到 1 之间的数字。", error=True)
                 return
             if not 0 < numeric_key < 1:
-                self.app.notify("模式 4 和 5 的密钥必须大于 0 且小于 1。", error=True)
+                self.app.notify("PicEncrypt 模式的密钥必须大于 0 且小于 1。", error=True)
                 return
         if is_dir and Path(input_path) == Path(output_path):
             self.app.notify("批量处理的输出目录不能与输入目录相同。", error=True)
             return
 
         action_name = "混淆" if operation == "encrypt" else "解混淆"
-        title = f"图像{action_name}（模式 {mode}）"
+        title = f"图像{action_name}（{self.mode_box.get()}）"
         suffix_text = self.suffix.get().strip()
         recursive = self.recursive.get()
         overwrite = self.overwrite.get()
