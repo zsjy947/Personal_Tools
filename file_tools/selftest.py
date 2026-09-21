@@ -50,6 +50,54 @@ def _test_suffix_tool(workdir: Path) -> None:
     assert marked.renamed == 2 and (target / "c副本.txt").exists(), "添加副本标记失败"
 
 
+def _test_image_rename(workdir: Path) -> None:
+    from .core.image_rename import rename_images
+
+    root = workdir / "rename"
+    a1 = root / "a1"
+    a2 = root / "a2"
+    a1.mkdir(parents=True)
+    a2.mkdir()
+    (a1 / "b2.jpg").write_bytes(b"1")
+    (a1 / "b10.jpg").write_bytes(b"2")
+    (a1 / "c.png").write_bytes(b"3")
+    (a1 / "readme.txt").write_text("x")
+    (a2 / "x.JPG").write_bytes(b"4")
+
+    out = workdir / "rename_out"
+    # 预览：不创建输出目录、不移动文件
+    preview = rename_images([a1, a2], out, "漫画", dry_run=True)
+    assert preview.found == 4 and preview.moved == 4, "预览计数不符"
+    assert not out.exists(), "预览不应创建输出目录"
+
+    # 多文件夹合并：自然排序 + 跨后缀统一编号 + 后缀大小写保留 + 非图片不动
+    done = rename_images([a1, a2], out, "漫画")
+    target = out / "漫画"
+    assert done.moved == 4, "合并移动数量不符"
+    assert sorted(path.name for path in target.iterdir()) == [
+        "漫画-1.jpg", "漫画-2.jpg", "漫画-3.png", "漫画-4.JPG",
+    ], "合并编号结果不符"
+    assert not (a1 / "b2.jpg").exists(), "图片应被剪切到目标文件夹"
+    assert (a1 / "readme.txt").exists(), "非图片文件不应被移动"
+
+    # 追加：目标已有 漫画-1~4，新图片从 漫画-5 续接
+    (a2 / "new.png").write_bytes(b"5")
+    again = rename_images([a2], out, "漫画")
+    assert again.moved == 1 and (target / "漫画-5.png").exists(), "追加编号未续接"
+    assert (target / "漫画-1.jpg").exists(), "追加不应影响已有文件"
+
+    # 目标文件夹内的文件再选进来会被跳过，不产生重复编号
+    skip = rename_images([target], out, "漫画")
+    assert skip.found == 0 and skip.moved == 0, "目标文件夹内的文件应被跳过"
+
+    # 递归收集子目录
+    (a1 / "sub").mkdir()
+    (a1 / "sub" / "deep.jpg").write_bytes(b"6")
+    recursive_out = workdir / "rename_rec"
+    rec = rename_images([a1], recursive_out, "递归", recursive=True)
+    assert rec.moved == 1 and (recursive_out / "递归" / "递归-1.jpg").exists(), "递归收集失败"
+
+
 def _test_download_images(workdir: Path) -> None:
     from PIL import Image
 
@@ -392,6 +440,7 @@ def main() -> int:
         for name, test in (
             ("image_decrypt", _test_image_tool),
             ("suffix_manager", _test_suffix_tool),
+            ("image_rename", _test_image_rename),
             ("media_to_mp4", _test_media_tool),
             ("media_grab", _test_media_grab),
             ("download_images", _test_download_images),
