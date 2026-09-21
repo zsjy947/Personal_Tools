@@ -24,6 +24,14 @@
 - 输入为目录时批量处理，支持 `--suffix`、`--recursive` 和 `--overwrite`，并保留相对目录结构。
 - 依赖 `numpy`、`Pillow`、`numba`。
 
+### `file_tools/core/image_convert.py`
+
+- 图片格式转换（Pillow 重编码，webp/jpg/png/bmp 互转）。与 media_to_mp4 区别：那是 ffmpeg 无损封装（只换容器），本模块是真正的解码重编码。
+- 透明通道转 jpg/bmp 自动垫白底（`_prepare`，先 `ImageOps.exif_transpose` 纠正方向）；动图只取首帧；`--quality` 仅 jpg/webp 生效。
+- 与目标同后缀的文件跳过；目标重名跳过不覆盖；输出默认在原图同目录，`--output-dir` 时平铺存放（重名跳过）；坏图计失败不中断；`--delete-original` 成功后删原图（默认关）。
+- 目录模式默认筛选 `SOURCE_SUFFIXES`（对齐 image_decrypt 的常见图片集合），`--ext` 可覆盖；转换前 `prepared.load()` 释放源文件句柄，Windows 上删除原图才不会因句柄占用失败。
+- 独立入口：`python -m file_tools.core.image_convert SOURCE -t {jpg,png,webp,bmp} [-o DIR] [--quality N] [--delete-original] [--ext ...] [--recursive] [--dry-run]`；GUI 视图 `convert_view.py`（源路径可文件可目录 + 格式单选 + 质量）。
+
 ### `file_tools/core/media_to_mp4.py`
 
 - 使用 ffmpeg 将真实内容为视频、但扩展名可能异常的文件无损封装为 MP4。
@@ -94,12 +102,12 @@
 - `theme.py`：`enable_dpi_awareness()` 必须在创建 Tk 之前调用（进程级 DPI 感知，否则窗口和文件对话框在高分屏上模糊），`setup_theme()` 计算缩放比例并配置字体与 ttk 样式；所有尺寸经过 `scale()` 换算，新增控件不要写死像素。
 - `app.py` `main()`：创建根窗口后先 `withdraw()`，构建与居中完成后再 `deiconify()` 一次性显示——防止启动时“先小窗后放大”的闪烁，勿改动此顺序。
 - `runner.py`：任务在后台线程执行，print 经队列交给主线程，同一时间只允许一个任务；`submit()` 支持可选 `on_done(message, succeeded)` 完成回调（主线程执行，用于视图刷新嗅探结果）。
-- `views/`：每个工具一个视图类（ID/TITLE/SUBTITLE + `build()` + `_run()`），在 `views/__init__.py` 注册；核心模块在 worker 内懒导入。`grab_view` 为两段式：选模式（直连/浏览器）→ 嗅探 → 资源表格（勾选/全选/预览/复制链接，双击行预览）→ 下载选中；直连模式预览在软件内抽帧，浏览器模式经本地代理在系统浏览器播放；`novel_view` 为搜索列表 + 下载表单（格式/章节范围/代理）；`rename_view` 为源路径列表（Treeview 多选，添加文件夹/图片、移除选中）+ 输出目录 + 统一名称，三场景（重命名/合并/追加）共用一次提交；`widgets.py` 的表单辅助照常复用。
-- 入口：`python -m file_tools.gui`、交互菜单选项 8、`FileTools.exe`。
+- `views/`：每个工具一个视图类（ID/TITLE/SUBTITLE + `build()` + `_run()`），在 `views/__init__.py` 注册；核心模块在 worker 内懒导入。`grab_view` 为两段式：选模式（直连/浏览器）→ 嗅探 → 资源表格（勾选/全选/预览/复制链接，双击行预览）→ 下载选中；直连模式预览在软件内抽帧，浏览器模式经本地代理在系统浏览器播放；`novel_view` 为搜索列表 + 下载表单（格式/章节范围/代理）；`rename_view` 为源路径列表（Treeview 多选，添加文件夹/图片、移除选中）+ 输出目录 + 统一名称，三场景（重命名/合并/追加）共用一次提交；`convert_view` 为源路径（文件/目录双浏览按钮）+ 格式单选 + 质量；`widgets.py` 的表单辅助照常复用。
+- 入口：`python -m file_tools.gui`、交互菜单选项 9、`FileTools.exe`。
 
 ### `file_tools/selftest.py` 与 `build_exe.py`
 
-- `python -m file_tools.selftest`（或 `FileTools.exe --selftest`）在当前环境冒烟测试各项核心工具（media_grab 用本地 HTTP 服务器测试嗅探/合并/AES 解密/ffmpeg 抽帧预览；download_images 用本地服务器测试下载；image_rename 用临时目录测试合并/追加/预览/递归；fanqie_novel 与 browser_sniff 仅离线测试纯函数——媒体识别/CDP 事件消费/父域计算/播放列表改写；preview_proxy 离线测试本地预览代理的透传与 m3u8 改写，均不依赖外网、不启动浏览器），全部通过退出码 0。
+- `python -m file_tools.selftest`（或 `FileTools.exe --selftest`）在当前环境冒烟测试各项核心工具（media_grab 用本地 HTTP 服务器测试嗅探/合并/AES 解密/ffmpeg 抽帧预览；download_images 用本地服务器测试下载；image_rename 用临时目录测试合并/追加/预览/递归；image_convert 用 PIL 造图测试透明垫白底/坏图容错/递归/删原图；fanqie_novel 与 browser_sniff 仅离线测试纯函数——媒体识别/CDP 事件消费/父域计算/播放列表改写；preview_proxy 离线测试本地预览代理的透传与 m3u8 改写，均不依赖外网、不启动浏览器），全部通过退出码 0。
 - `python build_exe.py` 用 PyInstaller 打包 GUI 为 `dist/FileTools/FileTools.exe`（目录模式，`--onefile` 为单文件）；`--collect-all imageio_ffmpeg` 把 ffmpeg 打进产物，`core/data/`（番茄后端、hls.min.js）整体随包；构建前需 `pip install pyinstaller`。
 
 ## 环境与分支

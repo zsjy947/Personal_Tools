@@ -1,6 +1,7 @@
 """各工具视图与注册表。"""
 
 from .base import ToolView
+from .convert_view import ConvertView
 from .download_view import DownloadView
 from .grab_view import GrabView
 from .image_view import ImageView
@@ -9,4 +10,13 @@ from .novel_view import NovelView
 from .rename_view import RenameView
 from .suffix_view import SuffixView
 
-VIEW_CLASSES = (ImageView, MediaView, GrabView, DownloadView, SuffixView, RenameView, NovelView)
+VIEW_CLASSES = (
+    ImageView,
+    MediaView,
+    GrabView,
+    DownloadView,
+    SuffixView,
+    RenameView,
+    ConvertView,
+    NovelView,
+)
