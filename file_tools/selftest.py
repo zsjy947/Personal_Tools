@@ -123,6 +123,69 @@ def _test_download_images(workdir: Path) -> None:
         server.shutdown()
 
 
+def _test_image_convert(workdir: Path) -> None:
+    from PIL import Image, ImageDraw
+
+    from .core.image_convert import convert_images
+
+    source_dir = workdir / "convert_src"
+    (source_dir / "sub").mkdir(parents=True)
+    # 四角全透明、中间不透明红块（验证垫白底与透明度保留）
+    canvas = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
+    ImageDraw.Draw(canvas).rectangle((4, 4, 11, 11), fill=(255, 0, 0, 255))
+    canvas.save(source_dir / "alpha.png")
+    Image.new("RGB", (16, 16), (0, 255, 0)).save(source_dir / "plain.jpg")
+    Image.new("RGB", (8, 8), (0, 0, 255)).save(source_dir / "sub" / "deep.png")
+    (source_dir / "note.txt").write_text("x")
+    (source_dir / "bad.webp").write_bytes(b"not an image")
+
+    # 预览：只列计划不写文件（plain.jpg 同后缀跳过不计，坏图按后缀照常计入）
+    preview = convert_images(source_dir, "jpg", dry_run=True)
+    assert preview.converted == 2, "预览计数不符"
+    assert not (source_dir / "alpha.jpg").exists(), "预览不应写文件"
+
+    # png -> jpg：透明通道垫白底，输出 RGB；坏图计失败不中断
+    done = convert_images(source_dir, "jpg")
+    assert done.converted == 1 and done.failed == 1, "png 转 jpg 计数不符"
+    jpg = Image.open(source_dir / "alpha.jpg")
+    assert jpg.mode == "RGB", "png 转 jpg 应输出 RGB"
+    # JPEG 有损压缩，用容差断言
+    corner = jpg.getpixel((0, 0))
+    assert all(channel >= 250 for channel in corner), f"透明角落应接近白底: {corner}"
+    center = jpg.getpixel((8, 8))
+    assert center[0] >= 250 and center[1] <= 8 and center[2] <= 8, f"不透明区域应接近原色: {center}"
+    assert (source_dir / "alpha.png").exists(), "默认应保留原图"
+
+    # webp 透明转 png：模式与透明度保留
+    Image.new("RGBA", (16, 16), (255, 0, 0, 128)).save(source_dir / "rt.webp")
+    to_png = convert_images(source_dir / "rt.webp", "png")
+    png_image = Image.open(source_dir / "rt.png")
+    assert to_png.converted == 1 and png_image.mode == "RGBA", "webp 转 png 应保留 RGBA"
+    assert png_image.getpixel((0, 0))[3] == 128, "透明度应保留"
+
+    # 同后缀跳过
+    skip = convert_images(source_dir / "plain.jpg", "jpg")
+    assert skip.converted == 0, "同后缀应跳过"
+
+    # 递归收集 + 输出目录平铺（alpha.png 与已生成的 alpha.webp 目标重名会跳过）
+    out = workdir / "convert_out"
+    conv = convert_images(source_dir, "webp", output_dir=out, recursive=True)
+    assert conv.converted == 4 and (out / "deep.webp").exists(), "递归 + 输出目录失败"
+
+    # quality 参数与删除原图
+    single = workdir / "convert_del"
+    single.mkdir()
+    Image.new("RGB", (8, 8), (10, 20, 30)).save(single / "one.bmp")
+    with_quality = convert_images(single / "one.bmp", "webp", quality=90)
+    assert with_quality.converted == 1 and (single / "one.webp").exists(), "转 webp 失败"
+    deleted = convert_images(single / "one.webp", "png", delete_original=True)
+    assert (
+        deleted.converted == 1
+        and (single / "one.png").exists()
+        and not (single / "one.webp").exists()
+    ), "删除原图失败"
+
+
 def _test_media_tool(workdir: Path) -> None:
     from .core.media_to_mp4 import convert_media, normalize_suffixes
 
@@ -441,6 +504,7 @@ def main() -> int:
             ("image_decrypt", _test_image_tool),
             ("suffix_manager", _test_suffix_tool),
             ("image_rename", _test_image_rename),
+            ("image_convert", _test_image_convert),
             ("media_to_mp4", _test_media_tool),
             ("media_grab", _test_media_grab),
             ("download_images", _test_download_images),

@@ -176,6 +176,30 @@ def run_media_grab() -> None:
     )
 
 
+def run_image_convert() -> None:
+    from .core.image_convert import convert_images
+
+    source = Path(ask_value("源图片或目录").strip('"'))
+    print("目标格式: 1 jpg / 2 png / 3 webp / 4 bmp")
+    while True:
+        choice = ask_value("目标格式")
+        if choice in {"1", "2", "3", "4"}:
+            break
+        print("错误: 格式必须是 1 至 4。")
+    target_format = {"1": "jpg", "2": "png", "3": "webp", "4": "bmp"}[choice]
+    output_value = input("输出目录（留空保存在原图同目录）: ").strip().strip('"')
+    quality_value = input("质量 1-100（留空默认，仅 jpg/webp 生效）: ").strip()
+    convert_images(
+        source,
+        target_format,
+        output_dir=Path(output_value) if output_value else None,
+        quality=int(quality_value) if quality_value else None,
+        delete_original=ask_yes_no("转换成功后删除原图"),
+        recursive=ask_yes_no("目录递归收集子目录"),
+        dry_run=ask_yes_no("仅预览，不实际转换", default=True),
+    )
+
+
 def run_fanqie_novel() -> None:
     from .core.fanqie_novel import download_novel, search_books
 
@@ -243,8 +267,9 @@ def main() -> int:
         "4": run_media_grab,
         "5": run_download_images,
         "6": run_image_rename,
-        "7": run_fanqie_novel,
-        "8": run_gui,
+        "7": run_image_convert,
+        "8": run_fanqie_novel,
+        "9": run_gui,
     }
     while True:
         print(
@@ -255,8 +280,9 @@ def main() -> int:
             "4. 网页媒体嗅探下载（含 m3u8 合并、B 站音视频合流）\n"
             "5. 图片批量下载（CSV/TXT 链接列表）\n"
             "6. 图片批量重命名（移动到 输出/名称 下连续编号）\n"
-            "7. 番茄小说搜索下载（仅供学习研究）\n"
-            "8. 打开可视化界面\n"
+            "7. 图片格式转换（webp/jpg/png/bmp 互转）\n"
+            "8. 番茄小说搜索下载（仅供学习研究）\n"
+            "9. 打开可视化界面\n"
             "0. 退出\n"
             "进入工具后，可随时输入 0 返回主菜单。"
         )
