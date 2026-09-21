@@ -119,6 +119,24 @@ def run_suffix_manager() -> None:
     )
 
 
+def run_image_rename() -> None:
+    from .core.image_rename import rename_images
+
+    raw = ask_value("源文件/目录（多个用 ; 分隔，目录收其下图片）")
+    sources = [Path(item.strip().strip('"')) for item in raw.split(";") if item.strip()]
+    if not sources:
+        raise ValueError("未提供任何源路径。")
+    output = Path(ask_value("输出目录（在其下创建以统一名称命名的子文件夹）").strip('"'))
+    name = ask_value("统一名称（编号为 名称-1、名称-2…）")
+    rename_images(
+        sources,
+        output,
+        name,
+        recursive=ask_yes_no("目录源递归收集子目录图片"),
+        dry_run=ask_yes_no("仅预览，不实际移动", default=True),
+    )
+
+
 def run_download_images() -> None:
     from .core.download_images import download_images
 
@@ -224,8 +242,9 @@ def main() -> int:
         "3": run_suffix_manager,
         "4": run_media_grab,
         "5": run_download_images,
-        "6": run_fanqie_novel,
-        "7": run_gui,
+        "6": run_image_rename,
+        "7": run_fanqie_novel,
+        "8": run_gui,
     }
     while True:
         print(
@@ -235,8 +254,9 @@ def main() -> int:
             "3. 文件名标记管理（添加/移除标记、删除副本等）\n"
             "4. 网页媒体嗅探下载（含 m3u8 合并、B 站音视频合流）\n"
             "5. 图片批量下载（CSV/TXT 链接列表）\n"
-            "6. 番茄小说搜索下载（仅供学习研究）\n"
-            "7. 打开可视化界面\n"
+            "6. 图片批量重命名（移动到 输出/名称 下连续编号）\n"
+            "7. 番茄小说搜索下载（仅供学习研究）\n"
+            "8. 打开可视化界面\n"
             "0. 退出\n"
             "进入工具后，可随时输入 0 返回主菜单。"
         )

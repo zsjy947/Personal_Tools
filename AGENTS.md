@@ -63,6 +63,13 @@
 - 独立入口：`python -m file_tools.core.suffix_manager {add,remove,delete} TARGET --marker MARKER [--recursive] [--dry-run]`。
 - 目标名冲突跳过；删除/重命名均有预览语义。
 
+### `file_tools/core/image_rename.py`
+
+- 图片批量重命名：把选中的图片**剪切**到「输出目录/统一名称」子文件夹下，按 `名称-1、名称-2…` 连续编号。
+- 三个场景同为一条路径：选一个文件夹/若干图片 = 批量重命名；选多个文件夹 = 按给定顺序连续编号（合并）；目标文件夹已有 `名称-N` = 自动从最大编号后续接（追加，`next_index`）。
+- 编号对所有后缀统一分配（绝不出现 `名称-1.jpg` 与 `名称-1.png` 并存），后缀原样保留（含大小写）；默认后缀 `{.jpg, .jpeg, .png}`（大小写不敏感），`collect_images` 文件夹内自然排序（`img-2` 在 `img-10` 前）、按 `resolve()` 去重，已在目标文件夹内的文件跳过。
+- 独立入口：`python -m file_tools.core.image_rename SOURCE [SOURCE ...] -o OUTPUT -n NAME [--recursive] [--dry-run]`；GUI 视图 `rename_view.py`（源路径列表 + 添加文件夹/图片/移除选中）。
+
 ### `file_tools/core/fanqie_novel.py`
 
 - 番茄小说搜索下载（仅供学习研究）。**纯后端薄客户端**：全部搜索/下载由内置
@@ -87,12 +94,12 @@
 - `theme.py`：`enable_dpi_awareness()` 必须在创建 Tk 之前调用（进程级 DPI 感知，否则窗口和文件对话框在高分屏上模糊），`setup_theme()` 计算缩放比例并配置字体与 ttk 样式；所有尺寸经过 `scale()` 换算，新增控件不要写死像素。
 - `app.py` `main()`：创建根窗口后先 `withdraw()`，构建与居中完成后再 `deiconify()` 一次性显示——防止启动时“先小窗后放大”的闪烁，勿改动此顺序。
 - `runner.py`：任务在后台线程执行，print 经队列交给主线程，同一时间只允许一个任务；`submit()` 支持可选 `on_done(message, succeeded)` 完成回调（主线程执行，用于视图刷新嗅探结果）。
-- `views/`：每个工具一个视图类（ID/TITLE/SUBTITLE + `build()` + `_run()`），在 `views/__init__.py` 注册；核心模块在 worker 内懒导入。`grab_view` 为两段式：选模式（直连/浏览器）→ 嗅探 → 资源表格（勾选/全选/预览/复制链接，双击行预览）→ 下载选中；直连模式预览在软件内抽帧，浏览器模式经本地代理在系统浏览器播放；`novel_view` 为搜索列表 + 下载表单（格式/章节范围/代理）；`widgets.py` 的表单辅助照常复用。
-- 入口：`python -m file_tools.gui`、交互菜单选项 6、`FileTools.exe`。
+- `views/`：每个工具一个视图类（ID/TITLE/SUBTITLE + `build()` + `_run()`），在 `views/__init__.py` 注册；核心模块在 worker 内懒导入。`grab_view` 为两段式：选模式（直连/浏览器）→ 嗅探 → 资源表格（勾选/全选/预览/复制链接，双击行预览）→ 下载选中；直连模式预览在软件内抽帧，浏览器模式经本地代理在系统浏览器播放；`novel_view` 为搜索列表 + 下载表单（格式/章节范围/代理）；`rename_view` 为源路径列表（Treeview 多选，添加文件夹/图片、移除选中）+ 输出目录 + 统一名称，三场景（重命名/合并/追加）共用一次提交；`widgets.py` 的表单辅助照常复用。
+- 入口：`python -m file_tools.gui`、交互菜单选项 8、`FileTools.exe`。
 
 ### `file_tools/selftest.py` 与 `build_exe.py`
 
-- `python -m file_tools.selftest`（或 `FileTools.exe --selftest`）在当前环境冒烟测试各项核心工具（media_grab 用本地 HTTP 服务器测试嗅探/合并/AES 解密/ffmpeg 抽帧预览；download_images 用本地服务器测试下载；fanqie_novel 与 browser_sniff 仅离线测试纯函数——媒体识别/CDP 事件消费/父域计算/播放列表改写；preview_proxy 离线测试本地预览代理的透传与 m3u8 改写，均不依赖外网、不启动浏览器），全部通过退出码 0。
+- `python -m file_tools.selftest`（或 `FileTools.exe --selftest`）在当前环境冒烟测试各项核心工具（media_grab 用本地 HTTP 服务器测试嗅探/合并/AES 解密/ffmpeg 抽帧预览；download_images 用本地服务器测试下载；image_rename 用临时目录测试合并/追加/预览/递归；fanqie_novel 与 browser_sniff 仅离线测试纯函数——媒体识别/CDP 事件消费/父域计算/播放列表改写；preview_proxy 离线测试本地预览代理的透传与 m3u8 改写，均不依赖外网、不启动浏览器），全部通过退出码 0。
 - `python build_exe.py` 用 PyInstaller 打包 GUI 为 `dist/FileTools/FileTools.exe`（目录模式，`--onefile` 为单文件）；`--collect-all imageio_ffmpeg` 把 ffmpeg 打进产物，`core/data/`（番茄后端、hls.min.js）整体随包；构建前需 `pip install pyinstaller`。
 
 ## 环境与分支
