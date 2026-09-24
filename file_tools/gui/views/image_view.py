@@ -35,7 +35,8 @@ IMAGE_MODES = {
 
 class ImageView(ToolView):
     ID = "image"
-    TITLE = "图像混淆 / 解混淆"
+    TITLE = "图片混淆解密"
+    NAV = "混淆解密"
     SUBTITLE = "五种双向像素混淆模式，支持单文件与目录批量处理。"
     RUN_TEXT = "开始处理"
 
@@ -179,7 +180,8 @@ class ImageView(ToolView):
         overwrite = self.overwrite.get()
 
         def worker() -> str:
-            from ...core.image_decrypt import normalize_suffixes, process_image, process_image_directory
+            from ...core.common import normalize_suffixes
+            from ...core.image_decrypt import process_image, process_image_directory
 
             if is_dir:
                 summary = process_image_directory(
@@ -188,7 +190,7 @@ class ImageView(ToolView):
                     input_path,
                     key,
                     output_path,
-                    suffixes=normalize_suffixes([suffix_text.replace(" ", ",")]),
+                    suffixes=normalize_suffixes([suffix_text]),
                     recursive=recursive,
                     overwrite=overwrite,
                 )

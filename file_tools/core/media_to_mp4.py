@@ -8,6 +8,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from .common import normalize_suffixes
+
 
 def run_hidden(command: list[str], **kwargs) -> subprocess.CompletedProcess:
     """执行外部命令且在 Windows 上不弹出控制台窗口（ffmpeg 等已内置，无需外部终端）。"""
@@ -43,16 +45,6 @@ class ConversionSummary:
     converted: int = 0
     skipped: int = 0
     failed: int = 0
-
-
-def normalize_suffixes(values: list[str] | None) -> set[str]:
-    suffixes: set[str] = set()
-    for value in values or []:
-        for item in value.split(","):
-            item = item.strip().lower()
-            if item:
-                suffixes.add(item if item.startswith(".") else f".{item}")
-    return suffixes
 
 
 def find_input_files(

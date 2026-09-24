@@ -23,6 +23,7 @@ LIST_FILETYPES = [
 class DownloadView(ToolView):
     ID = "download"
     TITLE = "图片批量下载"
+    NAV = "批量下载"
     SUBTITLE = "从 CSV/TXT 链接列表（每行第一列）并发下载图片，自动补全扩展名。"
     RUN_TEXT = "开始下载"
 

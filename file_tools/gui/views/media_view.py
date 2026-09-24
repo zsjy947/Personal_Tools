@@ -1,4 +1,4 @@
-"""伪装媒体转 MP4 视图。"""
+"""视频无损转 MP4 视图：只换容器、不重编码。"""
 
 from pathlib import Path
 import tkinter as tk
@@ -21,8 +21,9 @@ from .base import ToolView
 
 class MediaView(ToolView):
     ID = "media"
-    TITLE = "伪装媒体转 MP4"
-    SUBTITLE = "将真实内容为视频的文件无损封装为 MP4（ffmpeg 已内置，全程无外部窗口）。"
+    TITLE = "视频无损转 MP4"
+    NAV = "无损转 MP4"
+    SUBTITLE = "把真实内容为视频的文件无损封装为 MP4（只换容器不重编码，ffmpeg 已内置，全程无外部窗口）。"
     RUN_TEXT = "开始转换"
 
     def build(self, parent) -> None:
@@ -119,11 +120,12 @@ class MediaView(ToolView):
         overwrite = self.overwrite.get()
 
         def worker() -> str:
-            from ...core.media_to_mp4 import convert_media, normalize_suffixes
+            from ...core.common import normalize_suffixes
+            from ...core.media_to_mp4 import convert_media
 
             summary = convert_media(
                 source,
-                normalize_suffixes([suffix_text.replace(" ", ",")]) if is_dir else set(),
+                normalize_suffixes([suffix_text]) if is_dir else set(),
                 recursive=recursive if is_dir else False,
                 output_dir=Path(output_dir) if output_dir else None,
                 overwrite=overwrite,
@@ -132,5 +134,5 @@ class MediaView(ToolView):
             action = "预览完成" if dry_run else "转换完成"
             return f"{action}：成功 {summary.converted}，跳过 {summary.skipped}，失败 {summary.failed}。"
 
-        title = "伪装媒体转 MP4" + ("（仅预览）" if dry_run else "")
+        title = "视频无损转 MP4" + ("（仅预览）" if dry_run else "")
         self.app.submit(title, self.run_button, worker)

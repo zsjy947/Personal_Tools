@@ -16,15 +16,16 @@ from ..widgets import (
 )
 from .base import ToolView
 
-FORMATS = [("JPG", "jpg"), ("PNG", "png"), ("WEBP", "webp")]
+FORMATS = [("JPG", "jpg"), ("PNG", "png"), ("WEBP", "webp"), ("BMP", "bmp")]
 
 
 class ConvertView(ToolView):
     ID = "convert"
     TITLE = "图片格式转换"
+    NAV = "格式转换"
     SUBTITLE = (
-        "批量转换图片格式（重编码，与「伪装媒体文件转 MP4」的无损封装不同）："
-        "透明通道转 JPG 自动垫白底，动图取首帧，转换成功后可选删除原图。"
+        "批量转换图片格式（Pillow 重编码，与「视频无损转 MP4」的仅换容器不同）："
+        "透明通道转 JPG/BMP 自动垫白底，动图取首帧，转换成功后可选删除原图。"
     )
     RUN_TEXT = "开始转换"
 
@@ -123,6 +124,9 @@ class ConvertView(ToolView):
                 quality = int(quality_value)
             except ValueError:
                 self.app.notify("质量必须是 1-100 的数字。", error=True)
+                return
+            if not 1 <= quality <= 100:
+                self.app.notify("质量必须在 1 到 100 之间。", error=True)
                 return
         delete_original = self.delete_original.get()
         recursive = self.recursive.get()

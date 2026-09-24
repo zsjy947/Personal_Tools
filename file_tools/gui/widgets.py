@@ -31,12 +31,14 @@ def round_rect(canvas: tk.Canvas, x1, y1, x2, y2, radius, **kwargs):
 
 
 class NavItem(tk.Frame):
-    """侧边栏导航项，支持悬停与选中两种视觉状态。"""
+    """侧边栏导航项：悬停高亮，选中项以左侧强调条 + 加粗白字标识。"""
 
     def __init__(self, parent, text: str, command):
         super().__init__(parent, bg=COLORS["sidebar"], cursor="hand2")
         self._command = command
         self._active = False
+        self._bar = tk.Frame(self, width=scale(3), bg=COLORS["sidebar"])
+        self._bar.pack(side="left", fill="y")
         self._label = tk.Label(
             self,
             text=text,
@@ -44,10 +46,10 @@ class NavItem(tk.Frame):
             fg=COLORS["sidebar_text"],
             font=FONTS["nav"],
             anchor="w",
-            padx=scale(14),
+            padx=scale(11),
             pady=scale(9),
         )
-        self._label.pack(fill="both", expand=True)
+        self._label.pack(side="left", fill="both", expand=True)
         for widget in (self, self._label):
             widget.bind("<Button-1>", lambda _event: self._command())
             widget.bind("<Enter>", lambda _event: self._hover(True))
@@ -63,13 +65,14 @@ class NavItem(tk.Frame):
     def set_active(self, active: bool) -> None:
         self._active = active
         if active:
-            self._paint(COLORS["accent"], "#ffffff", FONTS["nav_active"])
+            self._paint(COLORS["sidebar_hover"], "#ffffff", FONTS["nav_active"])
         else:
             self._paint(COLORS["sidebar"], COLORS["sidebar_text"], FONTS["nav"])
 
     def _paint(self, bg: str, fg: str, font) -> None:
         self.config(bg=bg)
         self._label.config(bg=bg, fg=fg, font=font)
+        self._bar.config(bg=COLORS["accent"] if self._active else bg)
 
 
 # -------- 表单构建辅助：label 列 + 控件列的两栏布局 --------

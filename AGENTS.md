@@ -16,6 +16,13 @@
 
 核心工具在 `file_tools/core/`，每项均可独立 CLI 运行，GUI 与交互菜单在执行时才导入它们（`image_decrypt` 依赖较重，避免入口启动时加载）。
 
+### `file_tools/core/common.py`
+
+- 核心模块共享的纯函数小工具（无第三方依赖）：`normalize_suffixes` 把 `"mp4 m3u8"`、
+  `"jpeg,png"`、中文逗号等输入规范成补点小写后缀集合；原在 media_to_mp4、
+  image_decrypt、media_grab 各有一份实现（media_grab 版为超集），已合并到此处，
+  各模块统一 `from .common import normalize_suffixes`。
+
 ### `file_tools/core/image_decrypt.py`
 
 - 原 `demo.py`，支持 5 种图像混淆/解混淆模式，每种模式均提供双向处理。
@@ -27,7 +34,7 @@
 ### `file_tools/core/image_convert.py`
 
 - 图片格式转换（Pillow 重编码，webp/jpg/png/bmp 互转）。与 media_to_mp4 区别：那是 ffmpeg 无损封装（只换容器），本模块是真正的解码重编码。
-- 透明通道转 jpg/bmp 自动垫白底（`_prepare`，先 `ImageOps.exif_transpose` 纠正方向）；动图只取首帧；`--quality` 仅 jpg/webp 生效。
+- 透明通道转 jpg/bmp 自动垫白底（`_prepare`，先 `ImageOps.exif_transpose` 纠正方向）；CMYK 转 PNG 自动转 RGB；动图只取首帧；`--quality` 仅 jpg/webp 生效。
 - 与目标同后缀的文件跳过；目标重名跳过不覆盖；输出默认在原图同目录，`--output-dir` 时平铺存放（重名跳过）；坏图计失败不中断；`--delete-original` 成功后删原图（默认关）。
 - 目录模式默认筛选 `SOURCE_SUFFIXES`（对齐 image_decrypt 的常见图片集合），`--ext` 可覆盖；转换前 `prepared.load()` 释放源文件句柄，Windows 上删除原图才不会因句柄占用失败。
 - 独立入口：`python -m file_tools.core.image_convert SOURCE -t {jpg,png,webp,bmp} [-o DIR] [--quality N] [--delete-original] [--ext ...] [--recursive] [--dry-run]`；GUI 视图 `convert_view.py`（源路径可文件可目录 + 格式单选 + 质量）。
@@ -98,11 +105,11 @@
 
 ### `file_tools/gui/` 可视化界面包
 
-- 布局：深色侧边栏导航 + 内容区（标题 + 白色卡片表单）+ 深色日志面板 + 状态栏，视图切换不销毁表单状态。
+- 布局：深色分组侧边栏导航（`VIEW_GROUPS`：图片 / 媒体 / 文件与小说，组内用 NAV 短名）+ 内容区（标题 + 白色卡片表单）+ 深色日志面板 + 状态栏，视图切换不销毁表单状态。
 - `theme.py`：`enable_dpi_awareness()` 必须在创建 Tk 之前调用（进程级 DPI 感知，否则窗口和文件对话框在高分屏上模糊），`setup_theme()` 计算缩放比例并配置字体与 ttk 样式；所有尺寸经过 `scale()` 换算，新增控件不要写死像素。
 - `app.py` `main()`：创建根窗口后先 `withdraw()`，构建与居中完成后再 `deiconify()` 一次性显示——防止启动时“先小窗后放大”的闪烁，勿改动此顺序。
 - `runner.py`：任务在后台线程执行，print 经队列交给主线程，同一时间只允许一个任务；`submit()` 支持可选 `on_done(message, succeeded)` 完成回调（主线程执行，用于视图刷新嗅探结果）。
-- `views/`：每个工具一个视图类（ID/TITLE/SUBTITLE + `build()` + `_run()`），在 `views/__init__.py` 注册；核心模块在 worker 内懒导入。`grab_view` 为两段式：选模式（直连/浏览器）→ 嗅探 → 资源表格（勾选/全选/预览/复制链接，双击行预览）→ 下载选中；直连模式预览在软件内抽帧，浏览器模式经本地代理在系统浏览器播放；`novel_view` 为搜索列表 + 下载表单（格式/章节范围/代理）；`rename_view` 为源路径列表（Treeview 多选，添加文件夹/图片、移除选中）+ 输出目录 + 统一名称，三场景（重命名/合并/追加）共用一次提交；`convert_view` 为源路径（文件/目录双浏览按钮）+ 格式单选 + 质量；`widgets.py` 的表单辅助照常复用。
+- `views/`：每个工具一个视图类（ID/TITLE/SUBTITLE/NAV + `build()` + `_run()`），在 `views/__init__.py` 按 `VIEW_GROUPS` 分组注册；核心模块在 worker 内懒导入。`grab_view` 为两段式：选模式（直连/浏览器）→ 嗅探 → 资源表格（勾选/全选/预览/复制链接，双击行预览）→ 下载选中；直连模式预览在软件内抽帧，浏览器模式经本地代理在系统浏览器播放；`novel_view` 为搜索列表 + 下载表单（格式/章节范围/代理）；`rename_view` 为源路径列表（Treeview 多选，添加文件夹/图片、移除选中）+ 输出目录 + 统一名称，三场景（重命名/合并/追加）共用一次提交；`convert_view` 为源路径（文件/目录双浏览按钮）+ 格式单选 + 质量；`widgets.py` 的表单辅助照常复用。
 - 入口：`python -m file_tools.gui`、交互菜单选项 9、`FileTools.exe`。
 
 ### `file_tools/selftest.py` 与 `build_exe.py`

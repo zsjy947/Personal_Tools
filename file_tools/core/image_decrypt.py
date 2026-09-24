@@ -19,6 +19,8 @@ import numpy as np
 from numba import jit
 from PIL import Image
 
+from .common import normalize_suffixes
+
 
 DEFAULT_IMAGE_SUFFIXES = {".bmp", ".gif", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
 
@@ -284,16 +286,6 @@ def process_image(
         img = img.convert("RGB")
     img.save(output_path)
     print(f"文件已保存: {output_path}")
-
-
-def normalize_suffixes(values: list[str] | None) -> set[str]:
-    suffixes: set[str] = set()
-    for value in values or []:
-        for item in value.split(","):
-            item = item.strip().lower()
-            if item:
-                suffixes.add(item if item.startswith(".") else f".{item}")
-    return suffixes
 
 
 def process_image_directory(

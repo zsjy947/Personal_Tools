@@ -18,6 +18,7 @@ from .base import ToolView
 class RenameView(ToolView):
     ID = "rename"
     TITLE = "图片批量重命名"
+    NAV = "批量重命名"
     SUBTITLE = (
         "把选中的图片或整个文件夹移动到「输出目录/统一名称」下，按 名称-1、名称-2… 连续编号"
         "（保留原后缀，编号不重复）；目标已有编号自动续接，支持多文件夹合并与追加。"

@@ -3,7 +3,7 @@
 与 media_to_mp4 的区别：那里是 ffmpeg 无损封装（只换容器不重编码），
 本模块是真正的解码重编码。要点：
 
-- 透明通道转 jpg/bmp 自动垫白底；动图（gif/webp）只取首帧。
+- 透明通道转 jpg/bmp 自动垫白底；CMYK 转 PNG 自动转 RGB；动图（gif/webp）只取首帧。
 - `--quality` 仅 jpg/webp 生效；输出默认在原图同目录，`--output-dir` 时平铺存放。
 - 与目标同后缀的文件跳过；目标重名跳过不覆盖；坏图计失败不中断。
 """
@@ -47,6 +47,8 @@ def _prepare(image: Image.Image, fmt: str) -> Image.Image:
     if fmt == "JPEG" and image.mode not in ("RGB", "L", "CMYK"):
         image = image.convert("RGB")
     if fmt == "BMP" and image.mode not in ("RGB", "L", "P", "1"):
+        image = image.convert("RGB")
+    if fmt == "PNG" and image.mode == "CMYK":
         image = image.convert("RGB")
     return image
 
@@ -142,7 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from .media_to_mp4 import normalize_suffixes
+    from .common import normalize_suffixes
 
     args = build_parser().parse_args(argv)
     try:
