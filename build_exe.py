@@ -22,7 +22,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 APP_NAME = "FileTools"
-APP_VERSION = "2.2"
+APP_VERSION = "2.3"
 ENTRY = ROOT / "file_tools" / "gui" / "__main__.py"
 ICON = ROOT / "file_tools" / "gui" / "assets" / "app.ico"
 BUILD_DIR = ROOT / "build"

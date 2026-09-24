@@ -17,6 +17,7 @@ MODE_BROWSER = "browser"
 class GrabView(ToolView):
     ID = "grab"
     TITLE = "网页媒体下载"
+    NAV = "网页下载"
     SUBTITLE = (
         "嗅探网页中的视频/音频资源（对齐猫抓识别范围，支持 B 站 DASH 音视频合流）。"
         "直连模式直接请求页面；浏览器模式打开本机浏览器播放视频并捕获地址，"

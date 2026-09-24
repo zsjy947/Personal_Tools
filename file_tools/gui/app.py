@@ -16,7 +16,7 @@ from .theme import (
     scale,
     setup_theme,
 )
-from .views import VIEW_CLASSES
+from .views import VIEW_CLASSES, VIEW_GROUPS
 from .widgets import Card, NavItem, round_rect
 
 MAX_LOG_LINES = 3000
@@ -146,10 +146,22 @@ class App:
 
         nav_host = tk.Frame(bar, bg=COLORS["sidebar"])
         nav_host.pack(fill="x", padx=scale(10))
-        for cls in VIEW_CLASSES:
-            item = NavItem(nav_host, cls.TITLE, lambda vid=cls.ID: self.show_view(vid))
-            item.pack(fill="x", pady=scale(1))
-            self._nav_items[cls.ID] = item
+        for index, (group_title, classes) in enumerate(VIEW_GROUPS):
+            if index:
+                tk.Frame(nav_host, bg=COLORS["sidebar_hover"], height=1).pack(
+                    fill="x", pady=(scale(12), scale(4))
+                )
+            tk.Label(
+                nav_host,
+                text=group_title,
+                bg=COLORS["sidebar"],
+                fg=COLORS["sidebar_footer"],
+                font=FONTS["small"],
+            ).pack(fill="x", anchor="w", padx=scale(4), pady=(0, scale(2)))
+            for cls in classes:
+                item = NavItem(nav_host, cls.NAV or cls.TITLE, lambda vid=cls.ID: self.show_view(vid))
+                item.pack(fill="x", pady=scale(1))
+                self._nav_items[cls.ID] = item
 
         tk.Label(
             bar,

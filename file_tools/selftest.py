@@ -187,7 +187,8 @@ def _test_image_convert(workdir: Path) -> None:
 
 
 def _test_media_tool(workdir: Path) -> None:
-    from .core.media_to_mp4 import convert_media, normalize_suffixes
+    from .core.common import normalize_suffixes
+    from .core.media_to_mp4 import convert_media
 
     target = workdir / "media"
     target.mkdir()

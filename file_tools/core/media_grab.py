@@ -41,6 +41,7 @@ from urllib.parse import quote, urljoin, urlparse
 import requests
 from requests.adapters import HTTPAdapter
 
+from .common import normalize_suffixes
 from .media_to_mp4 import find_ffmpeg, run_hidden
 
 # 对齐猫抓可识别的媒体后缀（视频 / 音频 / 直播清单 / B 站 DASH 流）
@@ -158,17 +159,6 @@ class GrabSummary:
 
 
 # -------- 嗅探 --------
-
-def normalize_suffixes(values: list[str] | None) -> set[str]:
-    """把 "mp4 m3u8 ts" 之类的输入规范成 {".mp4", ".m3u8", ".ts"}。"""
-    suffixes: set[str] = set()
-    for value in values or []:
-        for item in value.replace("，", ",").replace(" ", ",").split(","):
-            item = item.strip().lower()
-            if item:
-                suffixes.add(item if item.startswith(".") else f".{item}")
-    return suffixes
-
 
 def url_suffix(url: str) -> str:
     """取 URL 路径部分的后缀（忽略查询参数），无后缀返回空串。"""

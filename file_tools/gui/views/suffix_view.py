@@ -21,6 +21,7 @@ OPERATIONS = [("添加标记", "add"), ("移除标记", "remove"), ("删除匹�
 class SuffixView(ToolView):
     ID = "suffix"
     TITLE = "文件名标记管理"
+    NAV = "文件名标记"
     SUBTITLE = "按自定义标记（如 .1、副本）批量添加/移除文件名标记，或删除带标记的文件。"
     RUN_TEXT = "开始处理"
 

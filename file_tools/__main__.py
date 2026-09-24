@@ -26,7 +26,8 @@ def ask_value(prompt: str) -> str:
 
 
 def run_image_decrypt() -> None:
-    from .core.image_decrypt import normalize_suffixes, process_image, process_image_directory
+    from .core.common import normalize_suffixes
+    from .core.image_decrypt import process_image, process_image_directory
 
     while True:
         operation_value = ask_value("操作：1 混淆 / 2 解混淆")
@@ -63,7 +64,7 @@ def run_image_decrypt() -> None:
 
     if is_directory:
         suffix_value = input("筛选后缀（留空处理常见图片格式，多个用空格或逗号分隔）: ")
-        suffixes = normalize_suffixes([suffix_value.replace(" ", ",")])
+        suffixes = normalize_suffixes([suffix_value])
         process_image_directory(
             operation,
             mode,
@@ -79,13 +80,14 @@ def run_image_decrypt() -> None:
 
 
 def run_media_to_mp4() -> None:
-    from .core.media_to_mp4 import convert_media, normalize_suffixes
+    from .core.common import normalize_suffixes
+    from .core.media_to_mp4 import convert_media
 
     source = Path(ask_value("输入文件或目录").strip('"'))
     suffixes: set[str] = set()
     recursive = False
     if source.is_dir():
-        suffixes = normalize_suffixes([input("筛选后缀（空格或逗号分隔）: ").replace(" ", ",")])
+        suffixes = normalize_suffixes([input("筛选后缀（空格或逗号分隔）: ")])
         recursive = ask_yes_no("递归处理子目录")
     output_value = input("统一输出目录（留空表示源文件目录）: ").strip().strip('"')
     convert_media(
@@ -274,10 +276,10 @@ def main() -> int:
     while True:
         print(
             "\n文件处理工具\n"
-            "1. 图像混淆/解混淆\n"
-            "2. 伪装媒体文件转 MP4\n"
+            "1. 图片混淆解密（五种模式，双向处理）\n"
+            "2. 视频无损转 MP4（只换容器，不重编码）\n"
             "3. 文件名标记管理（添加/移除标记、删除副本等）\n"
-            "4. 网页媒体嗅探下载（含 m3u8 合并、B 站音视频合流）\n"
+            "4. 网页媒体下载（含 m3u8 合并、B 站音视频合流）\n"
             "5. 图片批量下载（CSV/TXT 链接列表）\n"
             "6. 图片批量重命名（移动到 输出/名称 下连续编号）\n"
             "7. 图片格式转换（webp/jpg/png/bmp 互转）\n"
