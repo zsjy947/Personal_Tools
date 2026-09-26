@@ -17,7 +17,7 @@ from .theme import (
     setup_theme,
 )
 from .views import VIEW_CLASSES, VIEW_GROUPS
-from .widgets import Card, NavItem, round_rect
+from .widgets import Card, NavItem, ScrollFrame, round_rect
 
 MAX_LOG_LINES = 3000
 
@@ -147,17 +147,16 @@ class App:
         nav_host = tk.Frame(bar, bg=COLORS["sidebar"])
         nav_host.pack(fill="x", padx=scale(10))
         for index, (group_title, classes) in enumerate(VIEW_GROUPS):
-            if index:
-                tk.Frame(nav_host, bg=COLORS["sidebar_hover"], height=1).pack(
-                    fill="x", pady=(scale(12), scale(4))
-                )
+            # 组头：加粗提亮、与条目文字对齐，组间用留白而非分隔线，形成两级导航
             tk.Label(
                 nav_host,
                 text=group_title,
                 bg=COLORS["sidebar"],
-                fg=COLORS["sidebar_footer"],
-                font=FONTS["small"],
-            ).pack(fill="x", anchor="w", padx=scale(4), pady=(0, scale(2)))
+                fg=COLORS["sidebar_group"],
+                font=FONTS["nav_group"],
+                anchor="w",
+                padx=scale(14),
+            ).pack(fill="x", pady=(scale(2) if index == 0 else scale(14), scale(3)))
             for cls in classes:
                 item = NavItem(nav_host, cls.NAV or cls.TITLE, lambda vid=cls.ID: self.show_view(vid))
                 item.pack(fill="x", pady=scale(1))
@@ -193,8 +192,8 @@ class App:
         self._header_title.pack(anchor="w")
         self._header_subtitle = ttk.Label(header, text="", style="Subtitle.TLabel")
         self._header_subtitle.pack(anchor="w", pady=(scale(2), 0))
-        self._view_host = tk.Frame(content, bg=COLORS["bg"])
-        self._view_host.pack(fill="both", expand=True)
+        # 表单区放进滚动框架：小窗口下内容放不下时可滚动，执行按钮始终可达
+        self._view_host = ScrollFrame(content)
         pane.add(content, minsize=scale(360), stretch="always")
 
         self._build_log_card(pane)
@@ -227,7 +226,7 @@ class App:
             highlightthickness=0,
             selectbackground="#334155",
             font=FONTS["mono"],
-            height=7,
+            height=5,
             padx=scale(12),
             pady=scale(8),
         )
@@ -238,7 +237,7 @@ class App:
             ("title", COLORS["log_title"]),
         ):
             self.log_text.tag_configure(tag, foreground=color)
-        pane.add(card, minsize=scale(180), stretch="never")
+        pane.add(card, minsize=scale(150), stretch="never")
 
     # -------- 视图切换与任务 --------
 
@@ -250,6 +249,9 @@ class App:
         if view.frame is None:
             view.build(self._view_host)
         view.frame.pack(fill="both", expand=True)
+        # 切换视图只改内容自然高度、不改框架实际尺寸，主动触发一次滚动条重算
+        self._view_host.update_idletasks()
+        self._view_host._sync()
         self._header_title.config(text=view.TITLE)
         self._header_subtitle.config(text=view.SUBTITLE)
         for vid, item in self._nav_items.items():
@@ -363,6 +365,9 @@ class App:
 
     def _center_window(self, width: int, height: int) -> None:
         self.root.update_idletasks()
+        # 屏幕放不下默认尺寸时先自行收缩，避免被系统钳制后底部控件被裁
+        width = min(width, self.root.winfo_screenwidth() - scale(32))
+        height = min(height, self.root.winfo_screenheight() - scale(64))
         x = max(0, (self.root.winfo_screenwidth() - width) // 2)
         y = max(0, (self.root.winfo_screenheight() - height) // 3)
         self.root.geometry(f"{width}x{height}+{x}+{y}")
