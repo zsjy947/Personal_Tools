@@ -17,6 +17,7 @@ COLORS = {
     "sidebar": "#0f172a",
     "sidebar_hover": "#1e293b",
     "sidebar_text": "#c7d0dd",
+    "sidebar_group": "#8394ac",
     "sidebar_footer": "#475569",
     "accent": "#2563eb",
     "accent_hover": "#1d4ed8",
@@ -95,6 +96,7 @@ def setup_theme(root: tk.Tk) -> None:
         "title": tkfont.Font(root=root, family=ui, size=15, weight="bold"),
         "nav": tkfont.Font(root=root, family=ui, size=10),
         "nav_active": tkfont.Font(root=root, family=ui, size=10, weight="bold"),
+        "nav_group": tkfont.Font(root=root, family=ui, size=9, weight="bold"),
         "mono": tkfont.Font(root=root, family=mono, size=9),
     })
 

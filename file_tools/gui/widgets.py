@@ -19,6 +19,62 @@ class Card(tk.Frame):
         )
 
 
+class ScrollFrame(tk.Frame):
+    """可滚动的内容框架：子控件照常装进本框架，画布与滚动条由构造函数布置。
+
+    本框架是画布的子控件（child of canvas），必然绘制在画布之上——若做成
+    画布的兄弟控件，会被后创建的画布整层盖住、内容看似空白。内容不足视口时
+    拉伸到视口高度（卡片照旧铺满），超出时按自然高度滚动，保证底部的执行
+    按钮在任意窗口尺寸下都可达。用法与普通 Frame 相同，只是创建后不要再对
+    它调用 pack/grid（画布与滚动条由构造函数布置）。
+    """
+
+    def __init__(self, parent, **kwargs):
+        canvas = tk.Canvas(parent, bg=COLORS["bg"], highlightthickness=0, bd=0)
+        vsb = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        super().__init__(canvas, bg=COLORS["bg"], **kwargs)
+        self.canvas = canvas
+        self.vsb = vsb
+        self._item = self.canvas.create_window((0, 0), window=self, anchor="nw")
+        self.bind("<Configure>", self._sync)
+        self.canvas.bind("<Configure>", self._sync)
+        # 窗口先隐藏构建、再一次性显示：映射时尺寸可能不再变化、Configure 不会再来，
+        # 映射后补一次同步，防止内容停留在 1×1 导致整个内容区空白
+        self.canvas.bind("<Map>", lambda _event: self.after_idle(self._sync))
+        self.bind_all("<MouseWheel>", self._on_wheel)
+
+    def _sync(self, _event=None) -> None:
+        if not self.canvas.winfo_ismapped():
+            return
+        viewport = self.canvas.winfo_height()
+        content = self.winfo_reqheight()
+        self.canvas.itemconfigure(
+            self._item, width=self.canvas.winfo_width(), height=max(content, viewport)
+        )
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        if content > viewport and not self.vsb.winfo_ismapped():
+            self.vsb.pack(side="right", fill="y")
+        elif content <= viewport and self.vsb.winfo_ismapped():
+            self.vsb.pack_forget()
+
+    def _on_wheel(self, event) -> None:
+        try:
+            widget = self.winfo_containing(event.x_root, event.y_root)
+        except (KeyError, tk.TclError):
+            return
+        # 指针不在本容器内不处理；列表/日志等自带滚动的控件不接管
+        while widget is not None and widget is not self.canvas:
+            if isinstance(widget, (ttk.Treeview, tk.Text, tk.Listbox, tk.Canvas)):
+                return
+            widget = getattr(widget, "master", None)
+        else:
+            return
+        self.canvas.yview_scroll(int(-event.delta / 120 * scale(48)), "pixels")
+
+
 def round_rect(canvas: tk.Canvas, x1, y1, x2, y2, radius, **kwargs):
     """在 Canvas 上绘制平滑圆角矩形。"""
     points = [
@@ -89,7 +145,7 @@ def form_field(parent, row: int, widget, column: int = 1, columnspan: int = 1):
         column=column,
         columnspan=columnspan,
         sticky="ew",
-        pady=scale(7),
+        pady=scale(6),
     )
     return widget
 
@@ -140,7 +196,7 @@ def run_button_row(parent, row: int, text: str, command) -> ttk.Button:
     bar = ttk.Frame(parent, style="Card.TFrame")
     button = ttk.Button(bar, text=text, style="Accent.TButton", command=command)
     button.pack(side="right")
-    bar.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(scale(20), 0))
+    bar.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(scale(14), 0))
     return button
 
 
