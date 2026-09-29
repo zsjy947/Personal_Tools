@@ -4,7 +4,15 @@ import tkinter as tk
 from tkinter import filedialog, ttk
 
 from ..theme import scale
-from ..widgets import Card, entry_row, form_label, path_row, radio_row, run_button_row
+from ..widgets import (
+    Card,
+    default_output_dir,
+    entry_row,
+    form_label,
+    path_row,
+    radio_row,
+    run_button_row,
+)
 from .base import ToolView
 
 
@@ -76,7 +84,7 @@ class NovelView(ToolView):
         self.output_dir = tk.StringVar()
         path_row(body, row, self.output_dir, self._browse_output)
         ttk.Label(
-            body, text="留空使用 novel_downloads", style="Hint.TLabel"
+            body, text="留空使用 Downloads/novel_downloads", style="Hint.TLabel"
         ).grid(row=row, column=2, sticky="w")
 
         row += 1
@@ -167,7 +175,9 @@ class NovelView(ToolView):
             else:
                 self.app.notify("请先搜索并双击选择一本书，或直接粘贴链接/ID。", error=True)
                 return
-        output_dir = self.output_dir.get().strip().strip('"') or "novel_downloads"
+        output_dir = self.output_dir.get().strip().strip('"') or default_output_dir(
+            "novel_downloads"
+        )
         fmt = self.fmt.get()
         chapter_range = self.chapter_range.get().strip()
 

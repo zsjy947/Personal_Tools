@@ -1,7 +1,7 @@
 """文件名标记/后缀管理视图（合并原 .1 后缀与删除副本工具）。"""
 
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from ..theme import scale
 from ..widgets import (
@@ -79,6 +79,16 @@ class SuffixView(ToolView):
         operation = self.operation.get()
         recursive = self.recursive.get()
         dry_run = self.dry_run.get()
+
+        # 实际删除（非预览）前弹确认：批量删除不可恢复，避免误点直接执行
+        if operation == "delete" and not dry_run:
+            confirmed = messagebox.askyesno(
+                "确认删除",
+                f"将永久删除 {target} 下匹配“{marker}”的文件"
+                f"（递归：{'是' if recursive else '否'}），不可恢复。\n确认执行？",
+            )
+            if not confirmed:
+                return
 
         def worker() -> str:
             from ...core.suffix_manager import manage_suffix

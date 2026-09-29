@@ -169,8 +169,9 @@ class ImageView(ToolView):
             if not 0 < numeric_key < 1:
                 self.app.notify("PicEncrypt 模式的密钥必须大于 0 且小于 1。", error=True)
                 return
-        if is_dir and Path(input_path) == Path(output_path):
-            self.app.notify("批量处理的输出目录不能与输入目录相同。", error=True)
+        # 单文件与目录同样拦截同路径；路径别名（如 ./a.png）由核心层 resolve() 兜底
+        if Path(input_path) == Path(output_path):
+            self.app.notify("输出路径不能与输入相同。", error=True)
             return
 
         action_name = "混淆" if operation == "encrypt" else "解混淆"

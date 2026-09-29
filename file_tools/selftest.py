@@ -465,16 +465,27 @@ def _test_preview_proxy(workdir: Path) -> None:
         media_url = proxy.player_url(resource.url, resource.headers["Referer"], "file").replace(
             "/player?", "/media?"
         ).replace("&k=file", "")
-        # 直接取 /media 端点（与播放页等价路径）
+        # 直接取 /media 端点（与播放页等价路径）；须带一次性令牌 t=，否则 403
         from urllib.parse import parse_qs, quote, urlparse
 
         query = parse_qs(urlparse(media_url).query)
         proxied = (
             f"{proxy.base_url}/media?u={quote(query['u'][0], safe='')}"
-            f"&r={quote(query['r'][0], safe='')}"
+            f"&r={quote(query['r'][0], safe='')}&t={proxy.token}"
         )
         media = _requests.get(proxied, timeout=10)
         assert media.status_code == 200 and media.content == payload, "代理透传内容不一致"
+
+        # 缺令牌/错令牌的 /media 与 /player 请求应被拒绝（403）
+        for url_without_token in (
+            proxied.rsplit("&t=", 1)[0],
+            proxied + "-bad",
+            proxy.player_url(resource.url, resource.headers["Referer"], "file").rsplit(
+                "&t=", 1
+            )[0],
+        ):
+            rejected = _requests.get(url_without_token, timeout=10)
+            assert rejected.status_code == 403, "缺令牌的代理请求应返回 403"
 
         # Range 请求透传
         ranged = _requests.get(proxied, headers={"Range": "bytes=0-3"}, timeout=10)
@@ -483,7 +494,7 @@ def _test_preview_proxy(workdir: Path) -> None:
         # m3u8 改写
         playlist = _requests.get(
             f"{proxy.base_url}/media?u={quote(f'{base}/index.m3u8', safe='')}"
-            f"&r={quote(f'{base}/', safe='')}",
+            f"&r={quote(f'{base}/', safe='')}&t={proxy.token}",
             timeout=10,
         )
         assert playlist.status_code == 200, "m3u8 代理失败"

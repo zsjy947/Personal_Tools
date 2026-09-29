@@ -235,6 +235,7 @@ def process_image(
     input_path: str | Path,
     key: str,
     output_path: str | Path,
+    overwrite: bool = False,
 ) -> None:
     """混淆或解混淆图片。
 
@@ -244,6 +245,7 @@ def process_image(
         input_path: 输入图片路径
         key: 密钥（模式 1-3 为字符串，模式 4-5 为 0-1 浮点数）
         output_path: 输出图片路径
+        overwrite: 目标已存在时是否覆盖（默认 False，抛 FileExistsError）
     """
     if operation not in {"encrypt", "decrypt"}:
         raise ValueError(f"无效的操作: {operation}")
@@ -256,6 +258,11 @@ def process_image(
         raise FileNotFoundError(f"输入图片不存在: {input_path}")
     if not output_path.parent.is_dir():
         raise FileNotFoundError(f"输出目录不存在: {output_path.parent}")
+    # 单文件入口同样拦截输出==输入与静默覆盖（对齐批量分支的语义）
+    if output_path.resolve() == input_path.resolve():
+        raise ValueError("输出路径不能与输入相同")
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(f"目标文件已存在: {output_path}")
 
     numeric_key = None
     if mode in {"4", "5"}:
@@ -331,7 +338,7 @@ def process_image_directory(
             continue
         output_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            process_image(operation, mode, input_path, key, output_path)
+            process_image(operation, mode, input_path, key, output_path, overwrite=overwrite)
             summary.processed += 1
         except (OSError, ValueError) as exc:
             print(f"处理失败: {input_path} ({exc})", file=sys.stderr)
@@ -382,7 +389,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="目录模式筛选后缀，默认处理常见图片格式",
     )
     parser.add_argument("--recursive", action="store_true", help="目录模式递归处理子目录")
-    parser.add_argument("--overwrite", action="store_true", help="目录模式覆盖已有输出文件")
+    parser.add_argument("--overwrite", action="store_true", help="覆盖已有输出文件")
     return parser
 
 
@@ -403,7 +410,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             exit_code = 1 if summary.failed else 0
         else:
-            process_image(args.operation, args.mode, args.input, args.key, args.output)
+            process_image(
+                args.operation, args.mode, args.input, args.key, args.output,
+                overwrite=args.overwrite,
+            )
             exit_code = 0
     except (FileNotFoundError, NotADirectoryError, OSError, ValueError) as exc:
         print(f"错误: {exc}", file=sys.stderr)

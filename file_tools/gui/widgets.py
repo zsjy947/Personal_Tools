@@ -1,6 +1,7 @@
 """界面通用控件：卡片容器、侧边栏导航项与表单构建辅助。"""
 
 import tkinter as tk
+from pathlib import Path
 from tkinter import ttk
 
 from .theme import COLORS, FONTS, scale
@@ -65,12 +66,13 @@ class ScrollFrame(tk.Frame):
             widget = self.winfo_containing(event.x_root, event.y_root)
         except (KeyError, tk.TclError):
             return
-        # 指针不在本容器内不处理；列表/日志等自带滚动的控件不接管
+        # 沿控件链上溯：指针在自带滚动的控件（Treeview/Text/Listbox/Canvas）上不接管；
+        # 走到本框架的画布说明指针在容器内，交给画布滚动；到链尾仍未见画布则指针在容器外
         while widget is not None and widget is not self.canvas:
             if isinstance(widget, (ttk.Treeview, tk.Text, tk.Listbox, tk.Canvas)):
                 return
             widget = getattr(widget, "master", None)
-        else:
+        if widget is None:
             return
         self.canvas.yview_scroll(int(-event.delta / 120 * scale(48)), "pixels")
 
@@ -198,6 +200,15 @@ def run_button_row(parent, row: int, text: str, command) -> ttk.Button:
     button.pack(side="right")
     bar.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(scale(14), 0))
     return button
+
+
+def default_output_dir(name: str) -> str:
+    """下载类视图的默认输出目录（绝对路径）：Downloads 下的固定子目录，
+    无 Downloads 时退回用户主目录，避免落在随启动位置变化的 CWD。"""
+    base = Path.home() / "Downloads"
+    if not base.is_dir():
+        base = Path.home()
+    return str(base / name)
 
 
 def set_widgets_enabled(widgets, enabled: bool) -> None:

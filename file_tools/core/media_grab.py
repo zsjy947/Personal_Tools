@@ -11,8 +11,9 @@
 
 下载链路（下载与嗅探解耦，多级传输逐级回退，按主机记忆可用方式）：
 直连 requests → curl_cffi 浏览器指纹 → SNI 精简（TLS SNI 用父域、
-HTTP Host 保持原样，用于被 SNI 阻断的 CDN，证书校验降级会明确提示）
-→ 浏览器引擎（CDP Fetch 域流式读取，用于只有真实浏览器能连通的站点）。
+HTTP Host 保持原样，用于被 SNI 阻断的 CDN；证书校验降级仅对用户
+显式确认允许的域名启用）→ 浏览器引擎（CDP Fetch 域流式读取，
+用于只有真实浏览器能连通的站点）。
 
 预览：直连模式用内置 ffmpeg 抽帧在软件内预览；浏览器模式的资源
 （常见于被阻断站点）经本地预览代理在系统浏览器中直接播放，
@@ -28,6 +29,7 @@ import concurrent.futures
 import http.server
 import json
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -711,8 +713,30 @@ def _parse_iv(raw: str | None) -> bytes | None:
 # -------- 多级传输回退（下载链路） --------
 
 SNI_BYPASS_NOTE = (
-    "SNI 精简回退：TLS SNI 使用父域连接（证书校验已降级，仅建议用于公开媒体 CDN）"
+    "SNI 精简回退：TLS SNI 使用父域连接（证书校验已降级，仅建议用于公开媒体 CDN）；"
+    "默认关闭，仅对用户显式确认允许的域名启用"
 )
+
+# 本次会话内用户显式确认允许 SNI 精简（证书校验降级）的域名集合；
+# 默认为空——未登记的域名一律不走 SNI 精简，按普通失败进入重试/下一级
+_sni_bypass_hosts: set[str] = set()
+_sni_bypass_lock = threading.Lock()
+
+
+def allow_sni_bypass(host: str) -> None:
+    """登记一个用户显式确认允许 SNI 精简（证书校验降级）的域名，可传 host 或完整 URL。"""
+    cleaned = urlparse(host).hostname if "//" in host else (host or "").strip()
+    if not cleaned:
+        return
+    with _sni_bypass_lock:
+        _sni_bypass_hosts.add(cleaned.lower())
+
+
+def _sni_bypass_allowed(host: str) -> bool:
+    if not host:
+        return False
+    with _sni_bypass_lock:
+        return host.lower() in _sni_bypass_hosts
 
 
 class _StageFail(Exception):
@@ -908,6 +932,10 @@ class _TransportChain:
             response = self._get_via_curl(url, timeout=timeout, merged=merged)
             return self._check(stage, response)
         if stage == "sni":
+            # 证书校验降级不再自动触发：仅用户显式登记的域名允许走 SNI 精简，
+            # 其余按本级失败处理（进入下一级/整体失败路径）
+            if not _sni_bypass_allowed(urlparse(url).hostname or ""):
+                raise _StageFail("SNI 精简未获用户确认（证书校验降级需显式允许），已跳过")
             response = _sni_bypass_get(
                 url, referer=referer, timeout=timeout, headers=merged
             )
@@ -1146,7 +1174,7 @@ def download_m3u8(
         lock = threading.Lock()
         progress_step = max(1, total // 10)
 
-        def fetch_one(index: int) -> tuple[int, bytes]:
+        def fetch_one(index: int) -> tuple[int, int]:
             data = _request_with_retry(
                 session, playlist.segments[index], timeout, transport=transport
             )
@@ -1155,7 +1183,10 @@ def download_m3u8(
                     (playlist.media_sequence + index).to_bytes(16, "big")
                 )
                 data = _decrypt_aes128(data, key_bytes, iv)
-            return index, data
+            # 成功即落盘，返回 (序号, 字节) 元数据而非 bytes，避免整段视频全驻内存
+            seg_path = workdir / f"seg_{index:06d}.ts"
+            seg_path.write_bytes(data)
+            return index, seg_path.stat().st_size
 
         def report(_future) -> None:
             nonlocal done
@@ -1164,7 +1195,7 @@ def download_m3u8(
                 if done % progress_step == 0 or done == total:
                     print(f"已下载 {done}/{total} 个分段")
 
-        results: list[tuple[int, bytes]] = []
+        results: list[tuple[int, int]] = []
         failed: dict[int, Exception] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
             futures = {pool.submit(fetch_one, i): i for i in range(total)}
@@ -1199,10 +1230,14 @@ def download_m3u8(
         with merged.open("wb") as handle:
             if init_data:
                 handle.write(init_data)
-            for index, data in sorted(results):
-                handle.write(data)
+            # 按序号升序从分段文件流式合流（固定 4MB 块），内存占用与分段数无关
+            for index, _size in sorted(results):
+                seg_path = workdir / f"seg_{index:06d}.ts"
+                with seg_path.open("rb") as seg:
+                    while chunk := seg.read(4 * 1024 * 1024):
+                        handle.write(chunk)
         print(f"分段合并完成: {merged.stat().st_size / 1024 / 1024:.2f} MB")
-        saved_path = _finalize_output(merged, final_path, to_mp4)
+        saved_path = _finalize_output(merged, final_path, to_mp4, overwrite)
     finally:
         if not keep_segments:
             shutil.rmtree(workdir, ignore_errors=True)
@@ -1210,14 +1245,18 @@ def download_m3u8(
     return "downloaded", saved_path
 
 
-def _finalize_output(merged: Path, final_path: Path, to_mp4: bool) -> Path:
+def _finalize_output(
+    merged: Path, final_path: Path, to_mp4: bool, overwrite: bool = False
+) -> Path:
     """优先用 ffmpeg 无损封装 MP4，失败或不可用时保留 TS。"""
     if to_mp4:
         ffmpeg = find_ffmpeg()
         if ffmpeg:
             result = run_hidden(
                 [
-                    ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                    ffmpeg, "-hide_banner", "-loglevel", "error",
+                    # -y 覆盖 / -n 拒绝覆盖，按调用方的 overwrite 标志决定
+                    "-y" if overwrite else "-n",
                     "-i", str(merged),
                     "-c", "copy",
                     "-movflags", "+faststart",
@@ -1242,6 +1281,18 @@ def _finalize_output(merged: Path, final_path: Path, to_mp4: bool) -> Path:
                 file=sys.stderr,
             )
     ts_path = final_path.with_suffix(".ts")
+    if ts_path.exists():
+        if overwrite:
+            ts_path.unlink()  # 有覆盖权限：直接清掉旧文件后落位
+        else:
+            # 无覆盖权限：改名唯一化（xxx.1.ts 递增），不动已有文件
+            counter = 1
+            while True:
+                candidate = ts_path.with_name(f"{ts_path.stem}.{counter}{ts_path.suffix}")
+                if not candidate.exists():
+                    ts_path = candidate
+                    break
+                counter += 1
     shutil.move(str(merged), ts_path)
     print(f"已保存: {ts_path}")
     return ts_path
@@ -1565,11 +1616,15 @@ __ELEMENT__
 </body></html>"""
 
 
-def _proxy_media_url(url: str, referer: str) -> str:
-    return f"/media?u={quote(url, safe='')}&r={quote(referer, safe='')}"
+def _proxy_media_url(url: str, referer: str, token: str = "") -> str:
+    """构造本地代理 /media 地址；token 为预览代理的一次性访问令牌。"""
+    media = f"/media?u={quote(url, safe='')}&r={quote(referer, safe='')}"
+    if token:
+        media += f"&t={quote(token, safe='')}"
+    return media
 
 
-def _rewrite_playlist(text: str, base_url: str, referer: str) -> str:
+def _rewrite_playlist(text: str, base_url: str, referer: str, token: str = "") -> str:
     """把 m3u8 里的相对/绝对地址改写为本地代理地址（含 EXT-X-KEY/MAP 的 URI）。"""
     lines: list[str] = []
     for line in text.splitlines():
@@ -1580,7 +1635,7 @@ def _rewrite_playlist(text: str, base_url: str, referer: str) -> str:
         if stripped.startswith("#"):
             def replace_uri(match: re.Match) -> str:
                 absolute = urljoin(base_url, match.group(2).strip('"'))
-                return f'{match.group(1)}"{_proxy_media_url(absolute, referer)}"'
+                return f'{match.group(1)}"{_proxy_media_url(absolute, referer, token)}"'
 
             lines.append(
                 re.sub(r'(URI=)"([^"]+)"', replace_uri, line)
@@ -1588,7 +1643,7 @@ def _rewrite_playlist(text: str, base_url: str, referer: str) -> str:
             )
         else:
             absolute = urljoin(base_url, stripped)
-            lines.append(_proxy_media_url(absolute, referer))
+            lines.append(_proxy_media_url(absolute, referer, token))
     return "\n".join(lines)
 
 
@@ -1603,6 +1658,14 @@ class _PreviewProxyHandler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *args) -> None:  # 静默
         pass
+
+    def _token_ok(self, query: dict) -> bool:
+        """校验 /player、/media 携带的一次性令牌，防本机其他页面盗链代理。"""
+        supplied = (query.get("t") or [""])[0]
+        expected = self.proxy.token
+        return secrets.compare_digest(
+            supplied.encode("utf-8"), expected.encode("utf-8")
+        )
 
     def do_GET(self) -> None:
         from urllib.parse import parse_qs, urlparse as _urlparse
@@ -1633,13 +1696,17 @@ class _PreviewProxyHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _serve_player(self, query: dict) -> None:
+        if not self._token_ok(query):
+            # 注意：send_error 的 reason 不能用中文（状态行按 latin-1 严格编码会崩）
+            self.send_error(403)
+            return
         url = (query.get("u") or [""])[0]
         kind = (query.get("k") or ["file"])[0]
         if not url:
             self.send_error(400)
             return
         referer = (query.get("r") or [""])[0]
-        media = _proxy_media_url(url, referer)
+        media = _proxy_media_url(url, referer, self.proxy.token)
         if kind == "hls":
             # hls.js 必须以 script 标签同步加载：缺失时内联脚本里 Hls 未定义，
             # 预览页只显示占位提示而永远放不出视频
@@ -1684,6 +1751,10 @@ class _PreviewProxyHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _serve_media(self, query: dict) -> None:
+        if not self._token_ok(query):
+            # 注意：send_error 的 reason 不能用中文（状态行按 latin-1 严格编码会崩）
+            self.send_error(403)
+            return
         url = (query.get("u") or [""])[0]
         if not url or not url.startswith(("http://", "https://")):
             self.send_error(400)
@@ -1706,7 +1777,9 @@ class _PreviewProxyHandler(http.server.BaseHTTPRequestHandler):
             text = first.decode("utf-8", errors="replace") + b"".join(body).decode(
                 "utf-8", errors="replace"
             )
-            rewritten = _rewrite_playlist(text, url, referer).encode("utf-8")
+            rewritten = _rewrite_playlist(
+                text, url, referer, self.proxy.token
+            ).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/vnd.apple.mpegurl")
             self.send_header("Content-Length", str(len(rewritten)))
@@ -1733,6 +1806,8 @@ class _PreviewProxy:
         import threading as _threading
 
         self.transport = _TransportChain()
+        # 一次性随机令牌：/player、/media 均须携带（query t=），防本机其他页面盗链
+        self.token = secrets.token_urlsafe(24)
         hls_path = Path(__file__).parent / "data" / "hls.min.js"
         self._hls_bytes = hls_path.read_bytes() if hls_path.is_file() else b""
         handler = _PreviewProxyHandler
@@ -1763,7 +1838,7 @@ class _PreviewProxy:
     def player_url(self, media_url: str, referer: str, kind: str) -> str:
         return (
             f"{self.base_url}/player?u={quote(media_url, safe='')}"
-            f"&r={quote(referer, safe='')}&k={kind}"
+            f"&r={quote(referer, safe='')}&k={kind}&t={self.token}"
         )
 
 
@@ -1774,7 +1849,8 @@ _preview_proxy_lock = threading.Lock()
 def open_external_preview(resource: MediaResource) -> str:
     """浏览器模式预览：经本地代理在系统默认浏览器中播放，返回本地地址。
 
-    资源所在站点被网络阻断时，代理会自动走 SNI 精简/浏览器引擎回退。
+    资源所在站点被网络阻断时，代理会走浏览器引擎回退；SNI 精简同样
+    仅对用户显式确认允许的域名启用。
     """
     global _preview_proxy
     import webbrowser

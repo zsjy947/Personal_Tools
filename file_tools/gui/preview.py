@@ -36,6 +36,7 @@ class PreviewWindow(tk.Toplevel):
         self._pending = len(indices)
         self._workdir = Path(tempfile.mkdtemp(prefix="ft_preview_"))
         self._poll_job: str | None = None
+        self._closing = False  # 置位后后台取帧线程尽快收手，不再回填结果
 
         header = tk.Frame(self, bg=COLORS["bg"])
         header.pack(fill="x", padx=scale(16), pady=(scale(12), scale(6)))
@@ -65,6 +66,8 @@ class PreviewWindow(tk.Toplevel):
             "<Configure>",
             lambda e: self._canvas.itemconfigure(self._inner_window, width=e.width),
         )
+        # bind_all 会抢占全局滚轮（含主窗表单区）：先保存旧绑定脚本，关闭时恢复
+        self._saved_wheel = self._canvas.bind_all("<MouseWheel>")
         self._canvas.bind_all("<MouseWheel>", self._on_wheel)
 
         self._cards: dict[int, dict] = {}
@@ -119,6 +122,8 @@ class PreviewWindow(tk.Toplevel):
             fetch_media_bytes,
         )
 
+        if self._closing:  # 窗口已关闭：不再发起下载/抽帧，避免写已清理的临时目录
+            return
         resource = self._resources[index]
         try:
             if resource.suffix in IMAGE_SUFFIXES:
@@ -218,11 +223,23 @@ class PreviewWindow(tk.Toplevel):
         self._canvas.yview_scroll(-1 * (event.delta // 120), "units")
 
     def _close(self) -> None:
+        self._closing = True
         if self._poll_job is not None:
             self.after_cancel(self._poll_job)
         try:
-            self._canvas.unbind_all("<MouseWheel>")
+            # 恢复抢占前的全局滚轮绑定（如主窗表单区的滚动处理），无旧绑定才解绑
+            if getattr(self, "_saved_wheel", ""):
+                self._canvas.bind_all("<MouseWheel>", self._saved_wheel)
+            else:
+                self._canvas.unbind_all("<MouseWheel>")
         except tk.TclError:
             pass
         shutil.rmtree(self._workdir, ignore_errors=True)
+        # 取帧线程可能仍在写临时文件（ffmpeg 无法中途打断）：延迟再清一次兜底；
+        # 窗口 destroy 后 after 不可用，故用独立线程的 Timer
+        cleaner = threading.Timer(
+            0.5, shutil.rmtree, args=(self._workdir,), kwargs={"ignore_errors": True}
+        )
+        cleaner.daemon = True
+        cleaner.start()
         self.destroy()

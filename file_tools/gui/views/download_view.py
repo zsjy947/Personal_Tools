@@ -7,6 +7,7 @@ from ..theme import scale
 from ..widgets import (
     Card,
     check_row,
+    default_output_dir,
     entry_row,
     form_label,
     path_row,
@@ -43,7 +44,7 @@ class DownloadView(ToolView):
         self.output_dir = tk.StringVar()
         path_row(body, row, self.output_dir, self._browse_output)
         ttk.Label(
-            body, text="留空使用 downloaded_images", style="Hint.TLabel"
+            body, text="留空使用 Downloads/downloaded_images", style="Hint.TLabel"
         ).grid(row=row, column=2, sticky="w")
 
         row += 1
@@ -87,7 +88,10 @@ class DownloadView(ToolView):
         if concurrency <= 0:
             self.app.notify("并发数必须是正整数。", error=True)
             return
-        output_dir = self.output_dir.get().strip().strip('"') or "downloaded_images"
+        output_dir = (
+            self.output_dir.get().strip().strip('"')
+            or default_output_dir("downloaded_images")
+        )
         overwrite = self.overwrite.get()
 
         def worker() -> str:

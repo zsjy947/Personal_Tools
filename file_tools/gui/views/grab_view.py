@@ -2,10 +2,18 @@
 
 import threading
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
+from urllib.parse import urlparse
 
 from ..theme import COLORS, FONTS, scale
-from ..widgets import Card, check_row, form_label, path_row, radio_row
+from ..widgets import (
+    Card,
+    check_row,
+    default_output_dir,
+    form_label,
+    path_row,
+    radio_row,
+)
 from .base import ToolView
 
 CHECKED, UNCHECKED = "☑", "☐"
@@ -68,7 +76,7 @@ class GrabView(ToolView):
         self.output_dir = tk.StringVar()
         path_row(body, row, self.output_dir, self._browse_output)
         ttk.Label(
-            body, text="留空使用 media_downloads", style="Hint.TLabel"
+            body, text="留空使用 Downloads/media_downloads", style="Hint.TLabel"
         ).grid(row=row, column=2, sticky="w")
 
         row += 1
@@ -178,6 +186,7 @@ class GrabView(ToolView):
         self._sniffed: list = []
         self._sniff_mode: str = MODE_DIRECT
         self._sniff_stop: threading.Event | None = None
+        self._sni_asked: set[str] = set()  # 已询问过是否允许 SNI 精简的域名，避免重复打扰
 
     # -------- 列表交互 --------
 
@@ -301,6 +310,36 @@ class GrabView(ToolView):
             self.tree.set(iid, "sel", CHECKED)
         self.result_hint.config(text=f"共 {len(resources)} 个资源")
 
+    def _maybe_allow_sni_bypass(self, resources: list) -> None:
+        """嗅探结果含 https 资源时询问是否允许 SNI 精简（每个域名本次会话只问一次）。
+
+        证书校验降级有中间人风险，核心层默认拒绝 SNI 精简回退；无法预知哪些
+        域名会被 SNI 阻断，故在嗅探完成后对 https 资源域名统一征询一次，
+        用户同意的域名登记进核心层，后续下载即可在直连/指纹失败时启用该回退。
+        """
+        from ...core.media_grab import allow_sni_bypass
+
+        hosts = sorted(
+            {
+                urlparse(r.url).hostname
+                for r in resources
+                if r.url.startswith("https://") and urlparse(r.url).hostname
+            }
+            - self._sni_asked
+        )
+        if not hosts:
+            return
+        self._sni_asked.update(hosts)
+        names = "、".join(hosts[:3]) + ("等" if len(hosts) > 3 else "")
+        if messagebox.askyesno(
+            "允许 SNI 精简？",
+            f"嗅探到 https 媒体资源（{names}）。若这些站点被 SNI 阻断，"
+            "下载时需启用 SNI 精简回退：TLS 改用父域连接、证书校验降级，"
+            "仅建议用于公开媒体 CDN。\n\n是否允许本次会话对这些站点启用？",
+        ):
+            for host in hosts:
+                allow_sni_bypass(host)
+
     # -------- 嗅探与下载 --------
 
     def _sniff(self) -> None:
@@ -348,6 +387,7 @@ class GrabView(ToolView):
             self.finish_button.state(["disabled"])
             if succeeded:
                 self._fill_tree(self._sniffed)
+                self._maybe_allow_sni_bypass(self._sniffed)
                 self.result_hint_right.config(
                     text="双击行预览（在嗅探浏览器的新标签页播放）"
                     if mode == MODE_BROWSER else "双击行软件内预览"
@@ -377,7 +417,9 @@ class GrabView(ToolView):
         if not selected:
             self.app.notify("请先在列表中勾选要下载的资源。")
             return
-        output_dir = self.output_dir.get().strip().strip('"') or "media_downloads"
+        output_dir = self.output_dir.get().strip().strip('"') or default_output_dir(
+            "media_downloads"
+        )
         to_mp4 = self.to_mp4.get()
 
         def worker() -> str:

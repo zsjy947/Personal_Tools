@@ -120,25 +120,36 @@ def _tomato_config_yaml(fmt: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _tomato_server() -> str:
-    """启动内置后端的 Web 服务（先清场遗留实例），返回 base URL。
+def _tomato_status_matches(base: str) -> bool:
+    """探测 /api/status：可达且 save_dir 与当前配置一致，才视为可复用的健康实例。"""
+    try:
+        status = requests.get(base + "/api/status", timeout=2).json()
+    except Exception:  # noqa: BLE001 - 不可达/非 JSON 一律按不健康处理
+        return False
+    return Path(status.get("save_dir") or "").resolve() == (
+        _TOMATO_WORKDIR / "output"
+    ).resolve()
 
-    后端 exe 为本工具独占组件，save_path 等配置只在启动时读取，
-    因此不复用任何遗留实例：每次会话强制杀掉旧进程后重新启动。
+
+def _tomato_server() -> str:
+    """启动内置后端的 Web 服务（健康实例直接复用，仅不健康时清场强杀），返回 base URL。
+
+    强杀是通配符级的（会波及其他版本/来源的实例），因此先探测 /api/status：
+    可达且 save_dir 与当前一致——无论本会话实例还是上次会话遗留的健康实例——
+    都直接复用；仅不可达或 save_dir 不匹配时才清理遗留实例后重新启动。
     """
     global _tomato_proc
     base = f"http://127.0.0.1:{_TOMATO_PORT}"
     if _tomato_proc is not None and _tomato_proc.poll() is None:
-        try:
-            status = requests.get(base + "/api/status", timeout=2).json()
-            if Path(status.get("save_dir") or "").resolve() == (_TOMATO_WORKDIR / "output").resolve():
-                return base  # 本会话已启动且配置一致
-        except Exception:  # noqa: BLE001 - 状态异常则走清场重启
-            pass
+        if _tomato_status_matches(base):
+            return base  # 本会话已启动且配置一致
         _shutdown_tomato()
+    elif _tomato_status_matches(base):
+        return base  # 上次会话遗留的健康实例：配置一致，免强杀直接复用
 
-    # 清场：按通配符杀掉任何遗留实例（不同版本文件名不同，且它们持有旧配置）。
+    # 清场：按通配符杀掉不健康的遗留实例（不同版本文件名不同，且它们持有旧配置）。
     # 必须走 run_hidden（CREATE_NO_WINDOW）：GUI 进程拉起控制台程序会闪黑窗。
+    print("清理遗留后端实例")
     from .media_to_mp4 import run_hidden
 
     run_hidden(
