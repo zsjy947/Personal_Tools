@@ -205,9 +205,6 @@ class FlowView(ToolView):
         quality = tk.StringVar(
             value=str((rule.action_params or {}).get("quality", "") or "") if rule else ""
         )
-        delete_original = tk.BooleanVar(
-            value=bool((rule.action_params or {}).get("delete_original")) if rule else False
-        )
 
         row = 0
         form_label(body, row, "规则名称")
@@ -269,7 +266,10 @@ class FlowView(ToolView):
         params_box.grid(row=row, column=1, columnspan=2, sticky="ew")
 
         row += 1
-        check_row(body, row, [("转换成功后删除原图（不可撤销，慎选）", delete_original)])
+        ttk.Label(
+            body, text="监控动作始终保留原图（非破坏性纪律）；删除请用「格式转换」工具手动执行。",
+            style="Hint.TLabel",
+        ).grid(row=row, column=1, columnspan=2, sticky="w")
 
         row += 1
         buttons = ttk.Frame(body, style="Card.TFrame")
@@ -311,7 +311,6 @@ class FlowView(ToolView):
                 params = {
                     "target_format": target_format.get(),
                     "quality": quality_number,
-                    "delete_original": delete_original.get(),
                 }
             new_rule = self._rules[index] if rule else None
             if new_rule is None:

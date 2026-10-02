@@ -398,6 +398,7 @@ def _test_download_engine(workdir: Path) -> None:
     assert tasks[0].url == page and tasks[0].format_spec == de.DASH_PAIR_FORMAT
     assert "测试视频" in tasks[0].outtmpl and "%(ext)s" in tasks[0].outtmpl
     assert tasks[0].headers.get("Referer") == "https://www.bilibili.com/"
+    assert len(tasks[0].stream_fallback) == 2, "页面任务应携带逐流回退任务"
 
     video_only = [pair[0]]
     tasks = de.plan_ytdlp_tasks(video_only, out)
@@ -412,6 +413,28 @@ def _test_download_engine(workdir: Path) -> None:
                       kind="dash-audio", page_url="https://p2"),
     ]
     assert len(de.plan_ytdlp_tasks(diff_page, out)) == 2, "异页 dash 不应配对"
+
+    # 多页面各有音视频对：每页各生成一个页面任务（各自带逐流回退）
+    two_pages = [
+        MediaResource(url="https://cdn.example.com/v1.m4s", suffix=".m4s",
+                      kind="dash-video", title="甲", label="1080P", page_url="https://p/1"),
+        MediaResource(url="https://cdn.example.com/a1.m4s", suffix=".m4s",
+                      kind="dash-audio", title="甲", label="音频", page_url="https://p/1"),
+        MediaResource(url="https://cdn.example.com/v2.m4s", suffix=".m4s",
+                      kind="dash-video", title="乙", label="720P", page_url="https://p/2"),
+        MediaResource(url="https://cdn.example.com/a2.m4s", suffix=".m4s",
+                      kind="dash-audio", title="乙", label="音频", page_url="https://p/2"),
+    ]
+    tasks = de.plan_ytdlp_tasks(two_pages, out)
+    assert len(tasks) == 2 and all(t.is_dash_pair for t in tasks), \
+        f"两页 dash 对应产生两个页面任务: {len(tasks)}"
+    assert all(len(t.stream_fallback) == 2 for t in tasks), "每个页面任务应有逐流回退"
+
+    # 输出目录路径里的字面 % 同样要转义（outtmpl 整体是模板串）
+    percent_dir = workdir / "dir%s"
+    task = de.plan_ytdlp_tasks([pair[0]], percent_dir)[0]
+    assert "dir%%s" in task.outtmpl, "目录段 % 未转义"
+    assert de._existing_output(percent_dir, task.outtmpl) is None  # 未创建目录时安全返回 None
 
     # 词干中的字面 % 须转义，否则破坏 outtmpl 模板
     tricky = de.plan_ytdlp_tasks(
@@ -569,7 +592,8 @@ def _test_flow_watch(workdir: Path) -> None:
         third = watch.scan_once(require_stable=True)
         assert third["processed"] == 0, "processed 台账应阻止重复处理"
         entries = fw._read_jsonl(fw._ledger_path(fw.PROCESSED_NAME))
-        assert len(entries) == 2 and {e["rule"] for e in entries} == {"归类"}
+        assert len(entries) == 4 and {e["rule"] for e in entries} == {"归类"}, \
+            "源路径与移动目的地各应有台账（防递归规则重复识别）"
 
         undone, failures = fw.undo_last_batch()
         assert undone == 2 and not failures, f"撤销应还原 2 个移动: {undone}, {failures}"
@@ -579,6 +603,25 @@ def _test_flow_watch(workdir: Path) -> None:
             "撤销后不应残留归档副本"
         again_undone, _ = fw.undo_last_batch()
         assert again_undone == 0, "同一批次不应重复回滚"
+
+        # 递归分类规则：文件移入类别子目录后台账命中，不得被再次识别而无限改名
+        rec_dir = workdir / "rec_watch"
+        (rec_dir / "nested").mkdir(parents=True)
+        (rec_dir / "nested" / "song.mp3").write_bytes(b"audio")
+        rec_rules = [fw.Rule(name="递归归类", watch_dir=str(rec_dir),
+                             action=fw.ACTION_SORT, recursive=True)]
+        rec_watch = fw.FlowWatch(rec_rules, log_cb=print, settle_seconds=0.0)
+        assert rec_watch.scan_once(require_stable=True)["processed"] == 0
+        assert rec_watch.scan_once(require_stable=True)["processed"] == 1
+        moved_song = rec_dir / "音频" / "song.mp3"
+        assert moved_song.is_file(), "递归规则应把子目录文件归入顶层类别目录"
+        undo_count = len(fw._read_jsonl(fw._ledger_path(fw.UNDO_NAME)))
+        for _ in range(3):
+            assert rec_watch.scan_once(require_stable=True)["processed"] == 0, \
+                "移动后的文件不应被再次处理"
+        assert moved_song.is_file(), "不应产生改名副本"
+        assert len(fw._read_jsonl(fw._ledger_path(fw.UNDO_NAME))) == undo_count, \
+            "台账命中后不应产生新的移动记录"
 
         # ③ convert 规则端到端：造 webp → 转出 jpg + 台账记录
         Image.new("RGB", (12, 12), (250, 120, 10)).save(watch_dir / "pic.webp")
@@ -593,6 +636,26 @@ def _test_flow_watch(workdir: Path) -> None:
         assert summary["processed"] == 1, f"convert 规则应处理 1 个文件: {summary}"
         assert (watch_dir / "pic.jpg").is_file(), "应产出 jpg"
         assert (watch_dir / "pic.webp").exists(), "默认应保留原图"
+
+        # 监控动作纪律：即使规则带了 delete_original，转换也必须保留原图
+        Image.new("RGB", (8, 8), (7, 8, 9)).save(watch_dir / "keep.webp")
+        keep_rules = [fw.Rule(
+            name="保留原图", watch_dir=str(watch_dir), action=fw.ACTION_CONVERT,
+            suffixes={".webp"},
+            action_params={"target_format": "jpg", "delete_original": True},
+        )]
+        keep_watch = fw.FlowWatch(keep_rules, log_cb=print, settle_seconds=0.0)
+        assert keep_watch.scan_once(require_stable=False)["processed"] == 1
+        assert (watch_dir / "keep.webp").exists(), "监控 convert 不得删除原图"
+
+        # mtime 在未来（时钟偏移/网络拷贝）应视为已落定，不得永远 waiting
+        Image.new("RGB", (8, 8), (5, 6, 7)).save(watch_dir / "future.webp")
+        future_stamp = _time.time() + 3600
+        os.utime(watch_dir / "future.webp", (future_stamp, future_stamp))
+        future_watch = fw.FlowWatch(keep_rules, log_cb=print, settle_seconds=30.0)
+        got = future_watch.scan_once(require_stable=False)
+        assert got["processed"] == 1, f"未来 mtime 文件应被处理: {got}"
+        assert (watch_dir / "future.jpg").is_file()
 
         # 手动扫描的落定阈值仍然生效（默认 30s）：刚创建的文件不被处理
         strict_dir = workdir / "strict"

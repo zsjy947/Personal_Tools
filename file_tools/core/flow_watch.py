@@ -13,7 +13,9 @@
 - 日志经 log_cb 回调注入 GUI 日志队列，**回调内不得直接碰 Tk**。
 
 线程纪律：监控线程是独立 daemon 线程（不属于 runner 单任务短任务队列），
-归属 App；扫描互斥（后台轮询与手动 scan_once / 局域网触发并发时以锁保护）。
+归属 App；**扫描互斥用模块级锁**——所有 FlowWatch 实例共享一把
+_SCAN_LOCK，GUI 常驻监控、手动扫描与局域网 /api/scan 的任意并发都不会
+同时处理同一目录（否则 convert 双写产物、sort 双移动会损坏/丢失数据）。
 """
 
 import argparse
@@ -27,6 +29,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .common import normalize_suffixes, unique_path
+
+# 全部 FlowWatch 实例共享的扫描互斥锁（跨实例：GUI 监控 vs /api/scan vs CLI）
+_SCAN_LOCK = threading.Lock()
 
 ACTION_CONVERT = "convert"
 ACTION_TO_MP4 = "to_mp4"
@@ -70,9 +75,7 @@ class Rule:
             parts = [f"→ {params.get('target_format', 'jpg')}"]
             if params.get("quality"):
                 parts.append(f"质量 {params['quality']}")
-            if params.get("delete_original"):
-                parts.append("转后删原图（不可撤销）")
-            return "，".join(parts)
+            return "，".join(parts) + "（保留原图）"
         if self.action == ACTION_TO_MP4:
             return "无损封装（ffmpeg -c copy）"
         return "图片/视频/音频/文档/压缩包/其他"
@@ -241,7 +244,13 @@ def undo_last_batch() -> tuple[int, list[str]]:
     """逆序回滚最近一个批次的移动操作；返回 (成功条数, 失败消息列表)。
 
     只有成功回滚的条目会从台账移除，失败条目保留——再次调用会重试同一批次。
+    与扫描共用以模块级锁（读改写 undo.jsonl 期间不允许监控线程追加/轮转）。
     """
+    with _SCAN_LOCK:
+        return _undo_last_batch_locked()
+
+
+def _undo_last_batch_locked() -> tuple[int, list[str]]:
     path = _ledger_path(UNDO_NAME)
     entries = _read_jsonl(path)
     if not entries:
@@ -302,8 +311,9 @@ class FlowWatch:
         self.settle_seconds = max(0.0, settle_seconds)
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
-        self._scan_lock = threading.Lock()
+        self._scan_lock = _SCAN_LOCK
         self._previous: dict[str, tuple[int, float]] = {}  # 上轮快照（落定判定）
+        self._failed: dict[str, tuple[int, float]] = {}  # 本会话失败退避（不持久化）
         self._batch = ""
         self._processed = self._load_processed()
 
@@ -327,8 +337,14 @@ class FlowWatch:
 
     def stop(self, timeout: float = 5.0) -> None:
         self._stop_event.set()
-        if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=timeout)
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                # 扫描轮次（如长转换）未结束：保留线程引用，running 仍为 True，
+                # 防止立刻再启第二个监控实例形成并发扫描
+                self._log("[监控] 警告: 最后一轮扫描尚未结束，停止仍在进行。")
+                return
         self._thread = None
         self._log("[监控] 已停止。")
 
@@ -374,6 +390,10 @@ class FlowWatch:
                     continue
                 snapshot = (stat.st_size, stat.st_mtime)
                 age = now - stat.st_mtime
+                if age < 0:
+                    # mtime 在未来（相机/他机时钟偏移、网络拷贝常见）：视为已落定，
+                    # 否则 age 恒为负会让文件永远停在 waiting
+                    age = self.settle_seconds
                 if age < self.settle_seconds:
                     waiting[key] = snapshot  # 太新：等它落定
                     summary["waiting"] += 1
@@ -382,9 +402,11 @@ class FlowWatch:
                     waiting[key] = snapshot  # 第一轮见到：下一轮复查
                     summary["waiting"] += 1
                     continue
-                if key in self._processed and self._processed[key] == snapshot:
+                if self._processed.get(key) == snapshot:
                     continue  # 已处理过同一内容：台账命中跳过
-                ok, message = self._apply(rule, path)
+                if self._failed.get(key) == snapshot:
+                    continue  # 本会话内失败过：退避不再重试（重启会话后重新尝试）
+                ok, message, extras = self._apply(rule, path)
                 if ok:
                     self._processed[key] = snapshot
                     _append_jsonl(_ledger_path(PROCESSED_NAME), {
@@ -392,9 +414,20 @@ class FlowWatch:
                         "rule": rule.name, "path": key,
                         "size": snapshot[0], "mtime": snapshot[1],
                     })
+                    # 移动类动作把目的地也记入台账：递归规则下移动后的新路径
+                    # 不能被再次识别为"新文件"（否则会无限改名膨胀）
+                    for extra_key, extra_size, extra_mtime in extras:
+                        self._processed[extra_key] = (extra_size, extra_mtime)
+                        _append_jsonl(_ledger_path(PROCESSED_NAME), {
+                            "batch": self._batch, "ts": datetime_now_iso(),
+                            "rule": rule.name, "path": extra_key,
+                            "size": extra_size, "mtime": extra_mtime,
+                        })
+                    self._failed.pop(key, None)
                     summary["processed"] += 1
                     self._log(f"[监控] {rule.name}: {message}")
                 else:
+                    self._failed[key] = snapshot
                     summary["failed"] += 1
                     self._log(f"[监控] {rule.name} 失败: {message}")
         self._previous = waiting
@@ -404,19 +437,24 @@ class FlowWatch:
 
     # ---- 动作 ----
 
-    def _apply(self, rule: Rule, path: Path) -> tuple[bool, str]:
+    def _apply(self, rule: Rule, path: Path) -> tuple[bool, str, list[tuple[str, int, float]]]:
+        """对单个已落定文件执行动作。
+
+        返回 (是否处理成功, 消息, 追加台账条目)——移动类动作把目的地路径也
+        记入 processed 台账（防止递归规则下把移动后的文件再当新文件处理）。
+        """
         try:
             if rule.action == ACTION_SORT:
                 return self._apply_sort(rule, path)
             if rule.action == ACTION_CONVERT:
-                return self._apply_convert(rule, path)
+                return *self._apply_convert(rule, path), []
             if rule.action == ACTION_TO_MP4:
-                return self._apply_to_mp4(rule, path)
-            return False, f"未知动作: {rule.action}"
+                return *self._apply_to_mp4(rule, path), []
+            return False, f"未知动作: {rule.action}", []
         except Exception as exc:  # noqa: BLE001 - 单文件失败不中断整轮
-            return False, f"{path.name}: {exc}"
+            return False, f"{path.name}: {exc}", []
 
-    def _apply_sort(self, rule: Rule, path: Path) -> tuple[bool, str]:
+    def _apply_sort(self, rule: Rule, path: Path) -> tuple[bool, str, list[tuple[str, int, float]]]:
         category = category_of(path)
         dest_dir = Path(rule.watch_dir).expanduser() / category
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -424,7 +462,12 @@ class FlowWatch:
         # 移动前先记撤销台账（非破坏性纪律：任何移动都可逆）
         _record_undo(self._batch, [(str(path.resolve()), str(dest.resolve()))])
         shutil.move(str(path), str(dest))
-        return True, f"{path.name} → {category}/"
+        try:
+            stat = dest.stat()
+            extras = [(str(dest.resolve()), stat.st_size, stat.st_mtime)]
+        except OSError:
+            extras = []
+        return True, f"{path.name} → {category}/", extras
 
     def _apply_convert(self, rule: Rule, path: Path) -> tuple[bool, str]:
         from .image_convert import convert_images
@@ -432,15 +475,15 @@ class FlowWatch:
         params = rule.action_params or {}
         target_format = str(params.get("target_format") or "jpg")
         quality = params.get("quality")
+        # 监控动作纪律：非破坏性。即使规则文件里带了 delete_original，
+        # 也强制保留原图（删除只属于用户主动发起的转换任务）
         summary = convert_images(
             path,
             target_format,
             quality=int(quality) if quality else None,
-            delete_original=bool(params.get("delete_original", False)),
         )
         if summary.converted:
-            suffix = f"（已删原图）" if params.get("delete_original") else ""
-            return True, f"{path.name} → {target_format.upper()}{suffix}"
+            return True, f"{path.name} → {target_format.upper()}"
         if summary.skipped:
             return True, f"{path.name} 已是 {target_format.upper()}，跳过"
         return False, f"{path.name} 转换失败（详见日志）"

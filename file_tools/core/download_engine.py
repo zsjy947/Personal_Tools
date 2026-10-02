@@ -103,6 +103,8 @@ class YtdlpTask:
     format_spec: str | None = None
     fallback_urls: list[str] = field(default_factory=list)
     is_dash_pair: bool = False  # 由 dash 音视频对合并成的页面任务
+    # 页面任务失败时逐流回退的任务列表（对齐 legacy 的"至少拿到分离流"语义）
+    stream_fallback: list["YtdlpTask"] = field(default_factory=list)
 
 
 def _merged_headers(resource: MediaResource, referer: str | None) -> dict[str, str]:
@@ -128,9 +130,31 @@ def dash_pair_page_url(resources: list[MediaResource]) -> str | None:
 
 
 def _outtmpl_for(output_dir: Path, stem: str) -> str:
-    # outtmpl 是 % 模板串：词干里的字面 % 须先转义，否则 yt-dlp 解析出错
-    escaped = stem.replace("%", "%%")
-    return str(output_dir / f"{escaped}.%(ext)s")
+    # outtmpl 是 % 模板串：整条路径里任何字面 %（含目录段，如 D:\100%_dl）
+    # 都必须翻倍转义，否则 yt-dlp 会把目录段当模板解析
+    directory = str(output_dir).replace("%", "%%")
+    escaped_stem = stem.replace("%", "%%")
+    return str(Path(directory) / f"{escaped_stem}.%(ext)s")
+
+
+def _direct_task(resource: MediaResource, output_dir: Path,
+                 referer: str | None) -> YtdlpTask:
+    """单条资源 → 直下任务；输出词干沿用 legacy download_direct 命名规则。"""
+    if resource.kind.startswith("dash-"):
+        base = (
+            f"{resource.title} [{resource.label.split(' 时长')[0]}]"
+            if resource.title else resource.label
+        )
+        stem = _sanitize_stem(base)
+    else:
+        stem = _sanitize_stem(resource.title or resource.url)
+    return YtdlpTask(
+        url=resource.url,
+        outtmpl=_outtmpl_for(output_dir, stem),
+        label=resource.label or resource.kind_text,
+        headers=_merged_headers(resource, referer),
+        fallback_urls=list(resource.fallback_urls),
+    )
 
 
 def plan_ytdlp_tasks(
@@ -139,54 +163,56 @@ def plan_ytdlp_tasks(
     *,
     referer: str | None = None,
 ) -> list[YtdlpTask]:
-    """把资源列表整理为 yt-dlp 任务：dash 对合并为页面任务，其余逐条直下。
+    """把资源列表整理为 yt-dlp 任务。
 
-    直下任务的输出词干沿用 legacy download_direct 的命名规则（B 站单流
-    用「标题 [清晰度]」、其余用标题或地址），两引擎产物名保持一致。
+    每个同时勾选了同页面 dash-video+dash-audio 的页面生成一个页面任务
+    （由 yt-dlp 原生选清晰度+合流），并携带逐流回退任务——页面任务整体
+    失败时至少还能拿到分离流（对齐 legacy 行为）；其余资源逐条直下。
     """
     tasks: list[YtdlpTask] = []
-    page_url = dash_pair_page_url(resources)
-    if page_url:
+    audio_pages = {
+        r.page_url for r in resources if r.kind == "dash-audio" and r.page_url
+    }
+    paired_pages: list[str] = []
+    for resource in resources:
+        if (
+            resource.kind == "dash-video"
+            and resource.page_url in audio_pages
+            and resource.page_url not in paired_pages
+        ):
+            paired_pages.append(resource.page_url)
+
+    absorbed: set[int] = set()
+    for page in paired_pages:
         head = next(
             r for r in resources
-            if r.kind == "dash-video" and r.page_url == page_url
+            if r.kind == "dash-video" and r.page_url == page
         )
+        stream_indices = [
+            index for index, r in enumerate(resources)
+            if r.page_url == page and r.kind in ("dash-video", "dash-audio")
+        ]
+        absorbed.update(stream_indices)
         title = head.title or head.label or "dash-video"
         tasks.append(
             YtdlpTask(
-                url=page_url,
+                url=page,
                 outtmpl=_outtmpl_for(output_dir, _sanitize_stem(title)),
                 label=title,
                 headers=_merged_headers(head, referer),
                 format_spec=DASH_PAIR_FORMAT,
                 is_dash_pair=True,
+                stream_fallback=[
+                    _direct_task(resources[index], output_dir, referer)
+                    for index in stream_indices
+                ],
             )
         )
-        resources = [
-            r for r in resources
-            if not (r.page_url == page_url and r.kind in ("dash-video", "dash-audio"))
-        ]
 
-    for resource in resources:
-        if not resource.url:
+    for index, resource in enumerate(resources):
+        if index in absorbed or not resource.url:
             continue
-        if resource.kind.startswith("dash-"):
-            base = (
-                f"{resource.title} [{resource.label.split(' 时长')[0]}]"
-                if resource.title else resource.label
-            )
-            stem = _sanitize_stem(base)
-        else:
-            stem = _sanitize_stem(resource.title or resource.url)
-        tasks.append(
-            YtdlpTask(
-                url=resource.url,
-                outtmpl=_outtmpl_for(output_dir, stem),
-                label=resource.label or resource.kind_text,
-                headers=_merged_headers(resource, referer),
-                fallback_urls=list(resource.fallback_urls),
-            )
-        )
+        tasks.append(_direct_task(resource, output_dir, referer))
     return tasks
 
 
@@ -298,44 +324,73 @@ def _download_with_ytdlp(
     for task in plan_ytdlp_tasks(resources, output_dir, referer=referer):
         if task.is_dash_pair:
             print(f"检测到音视频分离流成对勾选，交由 yt-dlp 合流下载: {task.label}")
-        outcome = "failed"
-        saved: Path | None = None
-        candidates = [task.url, *task.fallback_urls]
-        for attempt, candidate in enumerate(candidates, 1):
-            if attempt > 1:
-                print(f"主地址失败，改用备用地址 #{attempt - 1}: {candidate}")
-            existing = _existing_output(output_dir, task.outtmpl)
-            if existing is not None and not overwrite:
-                print(f"跳过，目标已存在: {existing}")
-                outcome = "skipped"
-                break
-            try:
-                saved = _ytdlp_download_one(
-                    yt_dlp, task, candidate, output_dir,
+        outcome, saved = _execute_task(
+            yt_dlp, task, output_dir,
+            to_mp4=to_mp4, concurrency=concurrency,
+            timeout=timeout, overwrite=overwrite,
+        )
+        if outcome == "failed" and task.is_dash_pair and task.stream_fallback:
+            # 页面任务整体失败：回退为逐流下载，至少保留分离流（对齐 legacy）
+            print(f"页面下载失败，回退为逐流下载: {task.label}")
+            for stream_task in task.stream_fallback:
+                stream_outcome, stream_saved = _execute_task(
+                    yt_dlp, stream_task, output_dir,
                     to_mp4=to_mp4, concurrency=concurrency,
                     timeout=timeout, overwrite=overwrite,
                 )
-            except Exception as exc:  # noqa: BLE001 - 单任务失败换候选/计失败
-                print(f"下载失败: {candidate} ({exc})")
-                saved = None
-                outcome = "failed"
-                continue
-            outcome = "downloaded"
-            break
-        if outcome == "downloaded" and saved is not None:
-            summary.downloaded += 1
-            summary.outputs.append(str(saved))
-            if task.is_dash_pair:
-                summary.merged += 1
-        elif outcome == "skipped":
-            summary.skipped += 1
-        else:
-            summary.failed += 1
+                _apply_outcome(summary, stream_outcome, stream_saved, merged=False)
+            continue
+        _apply_outcome(summary, outcome, saved, merged=task.is_dash_pair)
     print(
         f"\n完成: 下载 {summary.downloaded}，合流 {summary.merged}，"
         f"跳过 {summary.skipped}，失败 {summary.failed}"
     )
     return summary
+
+
+def _apply_outcome(summary: GrabSummary, outcome: str, saved: Path | None,
+                   merged: bool) -> None:
+    if outcome == "downloaded" and saved is not None:
+        summary.downloaded += 1
+        summary.outputs.append(str(saved))
+        if merged:
+            summary.merged += 1
+    elif outcome == "skipped":
+        summary.skipped += 1
+    else:
+        summary.failed += 1
+
+
+def _execute_task(
+    yt_dlp,
+    task: YtdlpTask,
+    output_dir: Path,
+    *,
+    to_mp4: bool,
+    concurrency: int,
+    timeout: float,
+    overwrite: bool,
+) -> tuple[str, Path | None]:
+    """执行单条任务（含备用地址循环），返回 (结果, 保存路径)。"""
+    candidates = [task.url, *task.fallback_urls]
+    for attempt, candidate in enumerate(candidates, 1):
+        if attempt > 1:
+            print(f"主地址失败，改用备用地址 #{attempt - 1}: {candidate}")
+        existing = _existing_output(output_dir, task.outtmpl)
+        if existing is not None and not overwrite:
+            print(f"跳过，目标已存在: {existing}")
+            return "skipped", existing
+        try:
+            saved = _ytdlp_download_one(
+                yt_dlp, task, candidate, output_dir,
+                to_mp4=to_mp4, concurrency=concurrency,
+                timeout=timeout, overwrite=overwrite,
+            )
+        except Exception as exc:  # noqa: BLE001 - 单任务失败换候选/计失败
+            print(f"下载失败: {candidate} ({exc})")
+            continue
+        return "downloaded", saved
+    return "failed", None
 
 
 def _ytdlp_download_one(

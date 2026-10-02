@@ -26,9 +26,18 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
-
 DEFAULT_PORT = 38475
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2GB 上限，防误传撑爆内存
+
+# 上传串行锁：ThreadingHTTPServer 多线程，check-then-write 的重名判断
+# 必须串行才不互相覆盖
+_UPLOAD_LOCK = threading.Lock()
+
+# Windows 保留设备名（con.txt 等会静默写盘失败），上传时加前缀绕开
+_WINDOWS_RESERVED = frozenset(
+    {"con", "prn", "aux", "nul",
+     *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+)
 
 _PAGE_CSS = """
 body{font-family:system-ui,sans-serif;margin:0;background:#f1f5f9;color:#1f2430}
@@ -112,7 +121,11 @@ class LanShare:
             raise ValueError("没有可共享的目录（请先添加存在的目录）。")
         if sum(1 for share in shares if share.writable) > 1:
             raise ValueError("至多只能把一个目录标记为可上传。")
-        self.shares = shares
+        # 深拷贝白名单：服务运行期间 GUI 编辑共享列表不影响已运行的服务
+        #（列表与运行态语义一致：改动下次启动生效）
+        self.shares = [
+            Share(path=share.path, writable=share.writable) for share in shares
+        ]
         self.port = port
         self.token = token or secrets.token_urlsafe(16)
         server = ThreadingHTTPServer((host, port), _LanHandler)
@@ -152,8 +165,12 @@ class _LanHandler(BaseHTTPRequestHandler):
         return self.server.lan  # type: ignore[attr-defined]
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002
-        # 每个请求一行日志经回调进 GUI 日志面板（send_response 里调用）
-        self.lan._log(f"[局域网] {self.address_string()} {format % args}")
+        # 每个请求一行日志经回调进 GUI 日志面板；request line 里的 token
+        # 必须抹掉再记录（日志面板可复制/截图，不能落明文令牌）
+        line = re.sub(
+            r"([?&])token=[^&\s]*", r"\1token=***", format % args
+        )
+        self.lan._log(f"[局域网] {self.address_string()} {line}")
 
     # ---- 鉴权与公共响应 ----
 
@@ -255,7 +272,8 @@ class _LanHandler(BaseHTTPRequestHandler):
             self._deny(403, "路径不在共享范围内。")
             return
         token = quote(self.lan.token, safe="")
-        dir_param = (query.get("dir") or ["0"])[0]
+        # dir 参数归一成 int 再拼链接（原样拼接可注入 href 属性）
+        dir_param = str(int((query.get("dir") or ["0"])[0]))
         try:
             entries = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
         except OSError:
@@ -359,15 +377,19 @@ class _LanHandler(BaseHTTPRequestHandler):
             self._deny(400, "未在表单中找到文件。")
             return
         filename, payload = parsed
+        if Path(filename).stem.lower() in _WINDOWS_RESERVED:
+            filename = "_" + filename  # con.txt 等保留名 Windows 静默写盘失败
         from .common import unique_path
 
         base = Path(share.path).resolve()
-        dest = unique_path(base / filename)
-        try:
-            dest.write_bytes(payload)
-        except OSError as exc:
-            self._deny(500, f"写入失败: {exc}")
-            return
+        # 串行化落盘：并发上传同名文件时 unique_path 的重名判断会互相覆盖
+        with _UPLOAD_LOCK:
+            dest = unique_path(base / filename)
+            try:
+                dest.write_bytes(payload)
+            except OSError as exc:
+                self._deny(500, f"写入失败: {exc}")
+                return
         self.lan._log(f"[局域网] 上传完成: {dest.name}（{_format_size(len(payload))}）")
         token = quote(self.lan.token, safe="")
         self._send_html(

@@ -72,10 +72,12 @@ class LanView(ToolView):
             header, text="至多一个目录标记为「可上传」，其余只读",
             style="Hint.TLabel",
         ).pack(side="left", padx=(scale(10), 0))
-        ttk.Button(header, text="添加目录", style="Ghost.TButton",
-                   command=self._add_dir).pack(side="right")
-        ttk.Button(header, text="移除选中", style="Ghost.TButton",
-                   command=self._remove_dir).pack(side="right", padx=(scale(8), 0))
+        self.add_button = ttk.Button(header, text="添加目录", style="Ghost.TButton",
+                                     command=self._add_dir)
+        self.add_button.pack(side="right")
+        self.remove_button = ttk.Button(header, text="移除选中", style="Ghost.TButton",
+                                        command=self._remove_dir)
+        self.remove_button.pack(side="right", padx=(scale(8), 0))
         self.upload_button = ttk.Button(
             header, text="标记为可上传", style="Ghost.TButton",
             command=self._mark_upload,
@@ -196,6 +198,13 @@ class LanView(ToolView):
 
     def _sync_ui(self) -> None:
         running = self.app.lan_share is not None and self.app.lan_share.running
+        # 运行中的服务持有白名单快照：目录编辑改不动已运行实例，统一禁用
+        state = "disabled" if running else "!disabled"
+        for widget in (self.add_button, self.remove_button, self.upload_button):
+            try:
+                widget.state([state])
+            except tk.TclError:
+                pass
         if running:
             self.toggle_button.config(text="停止服务")
             self.status_label.config(

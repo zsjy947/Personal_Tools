@@ -332,7 +332,7 @@ class App:
                 pass
             self._notify_job = None
         self._append_log(f"\n{message}\n", tag="success" if succeeded else "error")
-        summary = (message or "").splitlines()[0]
+        summary = (message or "").splitlines() or [""]
         if succeeded:
             self._set_status(COLORS["status_idle"], summary or "任务完成")
             messagebox.showinfo("完成", message or "任务执行完成，详见运行日志。")

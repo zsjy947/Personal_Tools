@@ -31,16 +31,22 @@
   监听目录子文件夹）。明确不做 delete 类动作（image_rename 自动归档是 BACKLOG B6）。
 - Rule（dataclass）：name/enabled/watch_dir/recursive/suffixes（经 `normalize_suffixes`
   规范）/action/action_params；存 userdata `rules.json`（`load_rules`/`save_rules`，
-  支持 `--config` 换路径）。
+  支持 `--config` 换路径）。**监控动作强制非破坏性**：convert 即使规则文件带了
+  `delete_original` 也保留原图（删除只属于用户主动发起的任务）。
 - FlowWatch：轮询 daemon 线程（默认 10s 间隔）+ `scan_once(require_stable)`——
-  后台轮询要求连续两轮 `st_mtime+st_size` 一致且距今 ≥ 落定阈值（默认 30s）；
-  手动/局域网触发（`require_stable=False`）只按落定阈值。`.part/.tmp/~$/隐藏名`
-  一律跳过；processed 台账（userdata `processed.jsonl`：路径+size+mtime）重启不
-  重复处理；undo 台账（`undo.jsonl`，移动**前**写入）+ `undo_last_batch()` 逆序
-  回滚上一轮（失败条目保留待重试）。台账写失败静默、超 2MB 轮转。
-- 开关三层：`start()/stop()`；GUI 总开关（默认停止、状态不持久化）；单规则
-  enabled 勾选。日志经 `log_cb` 注入 GUI 日志队列（**回调内不得直接碰 Tk**）；
-  监控线程不属于 runner 单任务体系，归属 App（`app.flow_watch`），窗口关闭时停止。
+  后台轮询要求连续两轮 `st_mtime+st_size` 一致且距今 ≥ 落定阈值（默认 30s，mtime
+  在未来视为已落定）；手动/局域网触发（`require_stable=False`）只按落定阈值。
+  `.part/.tmp/~$/隐藏名` 一律跳过；processed 台账（userdata `processed.jsonl`：
+  路径+size+mtime）重启不重复处理，**sort 移动的目的地也入台账**（递归规则不会把
+  移动后的文件再当新文件无限改名）；本会话失败退避（不持久化，重启重试）；
+  undo 台账（`undo.jsonl`，移动**前**写入）+ `undo_last_batch()` 逆序回滚上一轮
+  （失败条目保留待重试）。台账写失败静默、超 2MB 轮转。
+- **扫描互斥是模块级锁**（`_SCAN_LOCK`，所有 FlowWatch 实例共享）：GUI 常驻监控、
+  手动扫描与局域网 /api/scan 任意并发都不会同时处理同一目录；undo 读改写同锁。
+- 开关三层：`start()/stop()`（stop 等不到线程退出时保留引用防重启并发）；
+  GUI 总开关（默认停止、状态不持久化）；单规则 enabled 勾选。日志经 `log_cb`
+  注入 GUI 日志队列（**回调内不得直接碰 Tk**）；监控线程不属于 runner 单任务
+  体系，归属 App（`app.flow_watch`），窗口关闭时停止。
 - `scan_now(log_cb)` 按 userdata 当前规则手动扫一轮（GUI 停止态/局域网 `/api/scan` 用）。
 - 独立入口：`python -m file_tools.core.flow_watch {run,once} [--config rules.json]
   [--rule NAME] [--interval N]`；GUI 视图 `flow_view.py`（规则表 + 添加/编辑
@@ -103,11 +109,13 @@
   或 `X-Token` 头（`compare_digest`），失败 403。
 - 共享模型：目录白名单（`Share(path, writable)`），**至多一个可上传**；请求路径经
   `resolve()` 后必须落在白名单目录内（`_safe_join`，防 `..` 穿越与符号链接逃逸）。
+  `start()` 深拷贝白名单（运行中 GUI 编辑不改已运行实例，lan_view 运行中禁用目录
+  编辑按钮）；上传串行锁防并发同名覆盖；Windows 保留设备名自动加 `_` 前缀。
 - 端点（HTML 全内联无外部依赖）：`GET /` 总览+上传表单、`GET /browse?dir=&p=` 目录列表
   （名称/大小/修改时间，子目录可进入）、`GET /download` 流式下载（Range 不做，BACKLOG
   B5）、`POST /upload`（手写最小 multipart 解析 `_parse_multipart`，重名序号递增）、
   `POST /api/scan`（触发 `flow_watch.scan_now()` 返回 JSON 计数）。每个请求一行日志经
-  回调进 GUI 日志面板。
+  回调进 GUI 日志面板，**request line 中的 token 先抹成 `token=***`**。
 - `LanShare.start(shares, port, token=None, host)` 返回可分享 URL（`lan_ip()` 用 UDP
   connect 技巧取局域网 IP，失败回退主机名）；atexit 注册 stop；App 窗口关闭一并停。
 - 明确不做（BACKLOG B5）：账号体系/HTTPS/二维码/Range 断点/独立常驻进程。
