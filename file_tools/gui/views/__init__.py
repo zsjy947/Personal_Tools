@@ -2,7 +2,9 @@
 
 from .base import ToolView
 from .convert_view import ConvertView
+from .dedupe_view import DedupeView
 from .download_view import DownloadView
+from .flow_view import FlowView
 from .grab_view import GrabView
 from .history_view import HistoryView
 from .image_view import ImageView
@@ -16,7 +18,7 @@ VIEW_GROUPS = (
     ("图片工具", (ImageView, ConvertView, RenameView, DownloadView)),
     ("媒体工具", (MediaView, GrabView)),
     ("文件与小说", (SuffixView, NovelView)),
-    ("自动化与服务", (HistoryView,)),
+    ("自动化与服务", (FlowView, DedupeView, HistoryView)),
 )
 
 VIEW_CLASSES = tuple(cls for _title, classes in VIEW_GROUPS for cls in classes)

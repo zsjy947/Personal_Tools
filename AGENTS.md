@@ -21,7 +21,40 @@
 - 核心模块共享的纯函数小工具（无第三方依赖）：`normalize_suffixes` 把 `"mp4 m3u8"`、
   `"jpeg,png"`、中文逗号等输入规范成补点小写后缀集合；原在 media_to_mp4、
   image_decrypt、media_grab 各有一份实现（media_grab 版为超集），已合并到此处，
-  各模块统一 `from .common import normalize_suffixes`。
+  各模块统一 `from .common import normalize_suffixes`。`unique_path` 目标重名时
+  自动追加序号（a.txt → a-1.txt），flow_watch/dedupe_images 等共用。
+
+### `file_tools/core/flow_watch.py`
+
+- 文件流自动化：目录监控规则引擎（纯标准库轮询线程 + 三类**非破坏性**动作：
+  `convert` 调 image_convert、`to_mp4` 调 media_to_mp4、`sort_by_type` 按类别移入
+  监听目录子文件夹）。明确不做 delete 类动作（image_rename 自动归档是 BACKLOG B6）。
+- Rule（dataclass）：name/enabled/watch_dir/recursive/suffixes（经 `normalize_suffixes`
+  规范）/action/action_params；存 userdata `rules.json`（`load_rules`/`save_rules`，
+  支持 `--config` 换路径）。
+- FlowWatch：轮询 daemon 线程（默认 10s 间隔）+ `scan_once(require_stable)`——
+  后台轮询要求连续两轮 `st_mtime+st_size` 一致且距今 ≥ 落定阈值（默认 30s）；
+  手动/局域网触发（`require_stable=False`）只按落定阈值。`.part/.tmp/~$/隐藏名`
+  一律跳过；processed 台账（userdata `processed.jsonl`：路径+size+mtime）重启不
+  重复处理；undo 台账（`undo.jsonl`，移动**前**写入）+ `undo_last_batch()` 逆序
+  回滚上一轮（失败条目保留待重试）。台账写失败静默、超 2MB 轮转。
+- 开关三层：`start()/stop()`；GUI 总开关（默认停止、状态不持久化）；单规则
+  enabled 勾选。日志经 `log_cb` 注入 GUI 日志队列（**回调内不得直接碰 Tk**）；
+  监控线程不属于 runner 单任务体系，归属 App（`app.flow_watch`），窗口关闭时停止。
+- `scan_now(log_cb)` 按 userdata 当前规则手动扫一轮（GUI 停止态/局域网 `/api/scan` 用）。
+- 独立入口：`python -m file_tools.core.flow_watch {run,once} [--config rules.json]
+  [--rule NAME] [--interval N]`；GUI 视图 `flow_view.py`（规则表 + 添加/编辑
+  Toplevel/删除/启停勾选 + 总开关 + 撤销上一轮）。
+
+### `file_tools/core/dedupe_images.py`
+
+- 一次性重复图片清理（非监控）：零依赖 dHash（PIL 灰度 9×8 → 64bit 指纹，先
+  `exif_transpose` 纠方向），汉明距离 ≤8/64 分组；每组保留分辨率最大（并列取文件
+  大）者为正本。
+- `scan(directory, recursive=False)` 纯扫描预览 + `move_duplicates(groups, only=None)`
+  把候选移入 `<目录>/重复图片_回收/`（重名序号递增），**绝不直接删除**；回收文件夹
+  不再进扫描。embedding 语义查重不做（BACKLOG B2）。
+- GUI 视图 `dedupe_view.py`（目录 + 递归 → 扫描 → 候选表默认全选 → 移入回收）。
 
 ### `file_tools/core/image_decrypt.py`
 
@@ -115,13 +148,14 @@
 - 布局：深色分组侧边栏导航（`VIEW_GROUPS`：图片工具 / 媒体工具 / 文件与小说 / 自动化与服务；组头加粗提亮、组间留白，组内用 NAV 动作短名）+ 内容区（标题显示完整名称 + 白色卡片表单，表单区为可滚动的 `ScrollFrame`——内容放不下时出滚动条并接管表单区滚轮，窗口被屏幕钳制后执行按钮也始终可达）+ 深色日志面板 + 状态栏，视图切换不销毁表单状态。
 - `theme.py`：`enable_dpi_awareness()` 必须在创建 Tk 之前调用（进程级 DPI 感知，否则窗口和文件对话框在高分屏上模糊），`setup_theme()` 计算缩放比例并配置字体与 ttk 样式；所有尺寸经过 `scale()` 换算，新增控件不要写死像素。
 - `app.py` `main()`：创建根窗口后先 `withdraw()`，构建与居中完成后再 `deiconify()` 一次性显示——防止启动时“先小窗后放大”的闪烁，勿改动此顺序。`show_view()` 切入时调用视图的 `on_show()` 钩子（需要刷新数据的视图覆写）。
-- `runner.py`：任务在后台线程执行，print 经队列交给主线程，同一时间只允许一个任务；`submit()` 支持可选 `on_done(message, succeeded)` 完成回调（主线程执行，用于视图刷新嗅探结果）。
-- `views/`：每个工具一个视图类，**视图协议契约固化在 `base.py` docstring**（ID/TITLE/SUBTITLE/NAV/RUN_TEXT + `build()` + `_run()` + `app.submit` 提交纪律 + worker 内懒导入核心模块 + `on_show()` 刷新钩子），新视图照此办理并在 `views/__init__.py` 按 `VIEW_GROUPS` 分组注册；核心模块在 worker 内懒导入。`grab_view` 为两段式：选模式（直连/浏览器）→ 嗅探 → 资源表格（勾选/全选/预览/复制链接，双击行预览）→ 下载选中（含「下载引擎」单选 auto/ytdlp/legacy）；直连模式预览在软件内抽帧，浏览器模式经本地代理在系统浏览器播放；`novel_view` 为搜索列表 + 下载表单（格式/章节范围/代理）；`rename_view` 为源路径列表（Treeview 多选，添加文件夹/图片、移除选中）+ 输出目录 + 统一名称，三场景（重命名/合并/追加）共用一次提交；`convert_view` 为源路径（文件/目录双浏览按钮）+ 格式单选 + 质量；`history_view` 为任务历史只读表（刷新/清空，双击行 Toplevel 看完整消息，`on_show` 重读）；`widgets.py` 的表单辅助照常复用。
+- `runner.py`：任务在后台线程执行，print 经队列交给主线程，同一时间只允许一个任务；`submit()` 支持可选 `on_done(message, succeeded)` 完成回调（主线程执行，用于视图刷新嗅探结果）；`post_log()` 供监控线程/局域网服务等非任务线程安全注入日志（由 `_poll` 统一 drain）。
+- 常驻后台组件（监控线程/局域网服务）不属于 runner 单任务体系，挂在 App（`app.flow_watch` / `app.lan_share`），日志经 `app.watch_log()` 进队列；`WM_DELETE_WINDOW` → `App._on_close()` 统一停止后销毁窗口。
+- `views/`：每个工具一个视图类，**视图协议契约固化在 `base.py` docstring**（ID/TITLE/SUBTITLE/NAV/RUN_TEXT + `build()` + `_run()` + `app.submit` 提交纪律 + worker 内懒导入核心模块 + `on_show()` 刷新钩子），新视图照此办理并在 `views/__init__.py` 按 `VIEW_GROUPS` 分组注册；核心模块在 worker 内懒导入。`grab_view` 为两段式：选模式（直连/浏览器）→ 嗅探 → 资源表格（勾选/全选/预览/复制链接，双击行预览）→ 下载选中（含「下载引擎」单选 auto/ytdlp/legacy）；直连模式预览在软件内抽帧，浏览器模式经本地代理在系统浏览器播放；`novel_view` 为搜索列表 + 下载表单（格式/章节范围/代理）；`rename_view` 为源路径列表（Treeview 多选，添加文件夹/图片、移除选中）+ 输出目录 + 统一名称，三场景（重命名/合并/追加）共用一次提交；`convert_view` 为源路径（文件/目录双浏览按钮）+ 格式单选 + 质量；`history_view` 为任务历史只读表（刷新/清空，双击行 Toplevel 看完整消息，`on_show` 重读）；`flow_view` 为监控规则表（总开关/撤销上一轮/规则 Toplevel 表单）；`dedupe_view` 为重复图片扫描确认；`widgets.py` 的表单辅助照常复用。
 - 入口：`python -m file_tools.gui`、交互菜单选项 9、`FileTools.exe`。
 
 ### `file_tools/selftest.py` 与 `build_exe.py`
 
-- `python -m file_tools.selftest`（或 `FileTools.exe --selftest`）在当前环境冒烟测试各项核心工具（media_grab 用本地 HTTP 服务器测试嗅探/legacy 内核的合并/AES 解密/ffmpeg 抽帧预览；download_engine 测引擎解析、yt-dlp opts 纯函数、dash 对判定、本地服务器的 yt-dlp 直链与 m3u8 端到端下载、重名跳过、备用地址兜底与未装 yt-dlp 时 auto→legacy 回退；download_images 用本地服务器测试下载；image_rename 用临时目录测试合并/追加/预览/递归；image_convert 用 PIL 造图测试透明垫白底/坏图容错/递归/删原图；fanqie_novel 与 browser_sniff 仅离线测试纯函数——媒体识别/CDP 事件消费/父域计算/播放列表改写；preview_proxy 离线测试本地预览代理的透传与 m3u8 改写；task_history 用 `FILE_TOOLS_DATA_DIR` 指向临时目录测记录/截断/坏行跳过/轮转/清空，均不依赖外网、不启动浏览器），全部通过退出码 0。
+- `python -m file_tools.selftest`（或 `FileTools.exe --selftest`）在当前环境冒烟测试各项核心工具（media_grab 用本地 HTTP 服务器测试嗅探/legacy 内核的合并/AES 解密/ffmpeg 抽帧预览；download_engine 测引擎解析、yt-dlp opts 纯函数、dash 对判定、本地服务器的 yt-dlp 直链与 m3u8 端到端下载、重名跳过、备用地址兜底与未装 yt-dlp 时 auto→legacy 回退；download_images 用本地服务器测试下载；image_rename 用临时目录测试合并/追加/预览/递归；image_convert 用 PIL 造图测试透明垫白底/坏图容错/递归/删原图；fanqie_novel 与 browser_sniff 仅离线测试纯函数——媒体识别/CDP 事件消费/父域计算/播放列表改写；preview_proxy 离线测试本地预览代理的透传与 m3u8 改写；task_history 用 `FILE_TOOLS_DATA_DIR` 指向临时目录测记录/截断/坏行跳过/轮转/清空；flow_watch 测临时名跳过/类别归类/后缀规范化/两轮落定与阈值等待/sort 动作与 processed 台账/undo 逆序回滚/convert 规则端到端/停止语义；dedupe_images 用 PIL 造同内容不同字节图测分组/正本选择/移入回收/回收不重扫/only 子集，均不依赖外网、不启动浏览器），全部通过退出码 0。
 - `python build_exe.py` 用 PyInstaller 打包 GUI 为 `dist/FileTools/FileTools.exe`（目录模式，`--onefile` 为单文件）；`--collect-all imageio_ffmpeg` 把 ffmpeg 打进产物，`--collect-all yt_dlp` 把默认下载引擎及其提取器插件整体随包，`core/data/`（番茄后端、hls.min.js）整体随包；构建前需 `pip install pyinstaller`。
 
 ## 环境与分支

@@ -518,6 +518,152 @@ def _test_download_engine(workdir: Path) -> None:
         server.shutdown()
 
 
+def _test_flow_watch(workdir: Path) -> None:
+    import os
+    import time as _time
+
+    from PIL import Image
+
+    from .core import flow_watch as fw
+
+    data_dir = workdir / "flow_userdata"
+    os.environ["FILE_TOOLS_DATA_DIR"] = str(data_dir)
+    try:
+        # ① 纯函数：临时名/隐藏名跳过、类别归类、后缀规范化、重名递增
+        assert fw.is_temp_name(Path("a/x.part")) and fw.is_temp_name(Path("x.tmp"))
+        assert fw.is_temp_name(Path("~$doc.xlsx")) and fw.is_temp_name(Path(".hidden"))
+        assert not fw.is_temp_name(Path("video.mp4"))
+        assert fw.category_of(Path("a.JPG")) == "图片"
+        assert fw.category_of(Path("b.mkv")) == "视频"
+        assert fw.category_of(Path("c.7z")) == "压缩包"
+        assert fw.category_of(Path("d.xyz")) == "其他"
+        rule = fw.rule_from_dict({
+            "name": "r", "watch_dir": "w", "action": "convert",
+            "suffixes": ["WEBP", ".png"], "action_params": {"target_format": "jpg"},
+        })
+        assert rule.suffixes == {".webp", ".png"}, "后缀应规范为补点小写"
+        assert fw.rule_matches(rule, Path("w/a.WEBP")) and not fw.rule_matches(rule, Path("w/a.gif"))
+        assert not fw.rule_matches(rule, Path("w/a.webp.part")), "临时名应跳过"
+        dest = fw.unique_path(workdir / "u" / "same.txt")
+        assert str(dest).endswith("same.txt"), "无冲突时原名"
+        (workdir / "u").mkdir()
+        (workdir / "u" / "same.txt").write_text("x")
+        assert fw.unique_path(workdir / "u" / "same.txt").name == "same-1.txt"
+
+        # ② sort 动作端到端 + processed 台账 + undo 逆序回滚
+        watch_dir = workdir / "watch"
+        watch_dir.mkdir()
+        (watch_dir / "clip.mp4").write_bytes(b"not really a video, just sort target")
+        (watch_dir / "note.pdf").write_bytes(b"%PDF-sort-me")
+        rules = [fw.Rule(name="归类", watch_dir=str(watch_dir), action=fw.ACTION_SORT)]
+        watch = fw.FlowWatch(rules, log_cb=print, settle_seconds=0.0)
+        first = watch.scan_once(require_stable=True)
+        assert first["processed"] == 0 and first["waiting"] == 2, \
+            f"第一轮只应登记快照: {first}"
+        second = watch.scan_once(require_stable=True)
+        assert second["processed"] == 2, f"第二轮应处理落定文件: {second}"
+        assert (watch_dir / "视频" / "clip.mp4").is_file(), "视频应归入 视频子目录"
+        assert (watch_dir / "文档" / "note.pdf").is_file(), "pdf 应归入 文档子目录"
+
+        # processed 台账：第三轮不重复处理
+        third = watch.scan_once(require_stable=True)
+        assert third["processed"] == 0, "processed 台账应阻止重复处理"
+        entries = fw._read_jsonl(fw._ledger_path(fw.PROCESSED_NAME))
+        assert len(entries) == 2 and {e["rule"] for e in entries} == {"归类"}
+
+        undone, failures = fw.undo_last_batch()
+        assert undone == 2 and not failures, f"撤销应还原 2 个移动: {undone}, {failures}"
+        assert (watch_dir / "clip.mp4").is_file() and (watch_dir / "note.pdf").is_file(), \
+            "撤销后文件应回到原位"
+        assert not (watch_dir / "视频").exists() or not any((watch_dir / "视频").iterdir()), \
+            "撤销后不应残留归档副本"
+        again_undone, _ = fw.undo_last_batch()
+        assert again_undone == 0, "同一批次不应重复回滚"
+
+        # ③ convert 规则端到端：造 webp → 转出 jpg + 台账记录
+        Image.new("RGB", (12, 12), (250, 120, 10)).save(watch_dir / "pic.webp")
+        convert_rules = [fw.Rule(
+            name="转格式", watch_dir=str(watch_dir), action=fw.ACTION_CONVERT,
+            suffixes={".webp"},
+            action_params={"target_format": "jpg", "quality": 90},
+        )]
+        watch2 = fw.FlowWatch(convert_rules, log_cb=print, settle_seconds=0.0)
+        # 手动扫描（require_stable=False）：只按落定阈值判定，一轮即处理
+        summary = watch2.scan_once(require_stable=False)
+        assert summary["processed"] == 1, f"convert 规则应处理 1 个文件: {summary}"
+        assert (watch_dir / "pic.jpg").is_file(), "应产出 jpg"
+        assert (watch_dir / "pic.webp").exists(), "默认应保留原图"
+
+        # 手动扫描的落定阈值仍然生效（默认 30s）：刚创建的文件不被处理
+        strict_dir = workdir / "strict"
+        strict_dir.mkdir()
+        Image.new("RGB", (8, 8), (1, 2, 3)).save(strict_dir / "fresh.webp")
+        strict_rules = [fw.Rule(
+            name="转格式", watch_dir=str(strict_dir), action=fw.ACTION_CONVERT,
+            suffixes={".webp"}, action_params={"target_format": "jpg"},
+        )]
+        skipped = fw.FlowWatch(strict_rules, log_cb=print).scan_once(require_stable=False)
+        assert skipped["waiting"] == 1 and skipped["processed"] == 0, \
+            "未到落定阈值的文件应等待"
+
+        # 停止语义：stop 后 running 为 False，线程退出
+        watch3 = fw.FlowWatch(convert_rules, log_cb=print, interval=1)
+        watch3.start()
+        assert watch3.running
+        watch3.stop(timeout=5)
+        assert not watch3.running, "stop 后监控线程应退出"
+    finally:
+        os.environ.pop("FILE_TOOLS_DATA_DIR", None)
+        _ = _time  # time 模块保留给后续用例扩展
+
+
+def _test_dedupe_images(workdir: Path) -> None:
+    from PIL import Image, ImageDraw
+
+    from .core.dedupe_images import RECYCLE_DIR_NAME, hamming, move_duplicates, scan
+
+    # 同像素不同字节的两张图（压缩级别不同）+ 一张小尺寸同内容图
+    # 图案须有明暗结构：纯渐变/纯色的 dHash 恒为 0，会与任何纯色图"重复"
+    root = workdir / "dedupe"
+    root.mkdir()
+    base = Image.new("RGB", (64, 64), (240, 240, 240))
+    ImageDraw.Draw(base).ellipse((4, 8, 44, 56), fill=(230, 60, 40))
+    ImageDraw.Draw(base).rectangle((30, 4, 60, 34), fill=(30, 90, 220))
+    base.save(root / "a.png", compress_level=1)
+    base.save(root / "b.png", compress_level=9)
+    base.resize((16, 16)).save(root / "c.png")  # 同内容小图：候选且尺寸更小
+    Image.new("RGB", (64, 64), (10, 200, 90)).save(root / "different.png")
+    (root / "notimage.txt").write_text("x")
+
+    groups = scan(root)
+    assert len(groups) == 1, f"同内容三张应归为一组: {len(groups)} 组"
+    group = groups[0]
+    assert len(group.candidates) == 2, "正本 1 张 + 候选 2 张"
+    keeper_name = group.keeper.name
+    assert keeper_name in ("a.png", "b.png"), f"正本应是全尺寸图: {keeper_name}"
+    assert "c.png" in [p.name for p in group.candidates], "小尺寸同内容图应是候选"
+
+    # 汉明距离纯函数
+    assert hamming(0b1010, 0b0101) == 4 and hamming(123, 123) == 0
+
+    summary = move_duplicates(groups)
+    assert summary["moved"] == 2 and not summary["failed"], f"移动摘要不符: {summary}"
+    recycle = root / RECYCLE_DIR_NAME
+    assert (recycle / "c.png").is_file(), "候选应移入回收文件夹"
+    assert (root / keeper_name).is_file(), "正本应留在原地"
+    assert not (root / "c.png").exists(), "候选不应留在原目录"
+
+    # 回收文件夹不重复进扫描
+    assert scan(root) == [], "回收文件夹内容不应再次成组"
+
+    # only 子集：只移动指定候选
+    base.save(root / "d.png", compress_level=1)
+    base.save(root / "e.png", compress_level=9)
+    groups = scan(root)
+    summary = move_duplicates(groups, only={root / "e.png"})
+    assert summary["moved"] == 1 and (root / "d.png").is_file(), "only 子集应生效"
+
+
 def _test_task_history(workdir: Path) -> None:
     import os
 
@@ -750,6 +896,8 @@ def main() -> int:
             ("browser_sniff", _test_browser_sniff),
             ("preview_proxy", _test_preview_proxy),
             ("task_history", _test_task_history),
+            ("flow_watch", _test_flow_watch),
+            ("dedupe_images", _test_dedupe_images),
         ):
             try:
                 test(workdir)

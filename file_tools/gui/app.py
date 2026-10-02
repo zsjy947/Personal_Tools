@@ -67,6 +67,11 @@ class App:
         self.runner = TaskRunner(self._append_log)
         self._task_started: float | None = None
         self._task_title = ""
+        # 常驻后台组件：监控线程与局域网服务不属于 runner 单任务体系，
+        # 归 App 持有，窗口关闭（WM_DELETE_WINDOW）时统一停止
+        self.flow_watch = None  # core.flow_watch.FlowWatch | None
+        self.lan_share = None  # core.lan_share.LanShare | None
+        root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_status_bar()
         main = tk.Frame(root, bg=COLORS["bg"])
         main.pack(fill="both", expand=True)
@@ -371,6 +376,23 @@ class App:
         self._set_status(COLORS["status_idle"], "日志已复制到剪贴板")
 
     # -------- 杂项 --------
+
+    def watch_log(self, text: str) -> None:
+        """监控线程/局域网服务的日志出口：只进队列，由 _poll 统一刷入面板。"""
+        self.runner.post_log(text if text.endswith("\n") else text + "\n")
+
+    def _on_close(self) -> None:
+        if self.flow_watch is not None:
+            try:
+                self.flow_watch.stop()
+            except Exception:  # noqa: BLE001 - 关窗收尾不因组件异常卡住
+                pass
+        if self.lan_share is not None:
+            try:
+                self.lan_share.stop()
+            except Exception:  # noqa: BLE001
+                pass
+        self.root.destroy()
 
     def _apply_window_icon(self) -> None:
         icon = _icon_path()
