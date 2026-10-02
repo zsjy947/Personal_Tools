@@ -518,6 +518,49 @@ def _test_download_engine(workdir: Path) -> None:
         server.shutdown()
 
 
+def _test_task_history(workdir: Path) -> None:
+    import os
+
+    from .core import task_history as th
+    from .core.userdata import base_dir
+
+    # FILE_TOOLS_DATA_DIR 优先（指向临时目录，不污染真实用户数据）
+    data_dir = workdir / "userdata"
+    os.environ["FILE_TOOLS_DATA_DIR"] = str(data_dir)
+    try:
+        assert base_dir() == data_dir, "FILE_TOOLS_DATA_DIR 应优先生效"
+        assert data_dir.is_dir(), "base_dir 应创建目录"
+
+        th.record("任务甲", True, 1.2345, "完成: 下载 3")
+        th.record("任务乙", False, 0.5, "错误: " + "长" * 900)
+        entries = th.read_recent()
+        assert len(entries) == 2 and entries[0]["title"] == "任务乙", "read_recent 应新的在前"
+        assert entries[0]["status"] == "fail" and entries[1]["status"] == "ok", "状态不符"
+        assert len(entries[0]["message"]) == 500, "超长 message 应截断至 500 字符"
+        assert abs(entries[1]["seconds"] - 1.234) < 0.001, "耗时应保留三位小数"
+        assert "T" in entries[0]["ts"] and ":" in entries[0]["ts"], "ts 应为 ISO8601"
+        assert set(entries[0]) == {"ts", "title", "status", "seconds", "message"}, "条目字段不符"
+
+        # 坏行跳过：手工混入损坏行后仍能读出有效条目
+        path = th.history_path()
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write("这不是JSON\n")
+        assert len(th.read_recent()) == 2, "坏行应跳过"
+
+        # 轮转：文件超 2MB 时重写为最近 500 条，且最新记录仍可读
+        for index in range(4600):
+            th.record("批量", True, 0.1, f"第{index}批 " + "x" * 400)
+        entries = th.read_recent(limit=10)
+        assert "4599" in entries[0]["message"], "轮转后应能读到最新记录"
+        lines = path.read_text(encoding="utf-8").splitlines()
+        assert 500 <= len(lines) < 4600, f"轮转应控制文件行数: {len(lines)}"
+
+        th.clear()
+        assert th.read_recent() == [], "clear 后应为空"
+    finally:
+        os.environ.pop("FILE_TOOLS_DATA_DIR", None)
+
+
 def _test_fanqie_novel(workdir: Path) -> None:
     """离线测试：文件名清理、章节范围解析、书籍 ID 提取。"""
     from .core.fanqie_novel import parse_chapter_range, re_search_id, sanitize_filename
@@ -706,6 +749,7 @@ def main() -> int:
             ("fanqie_novel", _test_fanqie_novel),
             ("browser_sniff", _test_browser_sniff),
             ("preview_proxy", _test_preview_proxy),
+            ("task_history", _test_task_history),
         ):
             try:
                 test(workdir)

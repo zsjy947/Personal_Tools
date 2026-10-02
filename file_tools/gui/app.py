@@ -2,6 +2,7 @@
 
 import io
 import sys
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, scrolledtext, ttk
@@ -64,6 +65,8 @@ class App:
         self._apply_window_icon()
 
         self.runner = TaskRunner(self._append_log)
+        self._task_started: float | None = None
+        self._task_title = ""
         self._build_status_bar()
         main = tk.Frame(root, bg=COLORS["bg"])
         main.pack(fill="both", expand=True)
@@ -249,6 +252,7 @@ class App:
         if view.frame is None:
             view.build(self._view_host)
         view.frame.pack(fill="both", expand=True)
+        view.on_show()
         # 切换视图只改内容自然高度、不改框架实际尺寸，主动触发一次滚动条重算
         self._view_host.update_idletasks()
         self._view_host._sync()
@@ -285,6 +289,9 @@ class App:
         if not self.runner.submit(title, worker, on_done=on_done):
             self.notify("已有任务在执行，请等待其完成。")
             return False
+        # 任务历史在 _finish_task 单点记录，这里只留起始时刻与标题
+        self._task_started = time.monotonic()
+        self._task_title = title
         for run_button in self._run_buttons:
             run_button.state(["disabled"])
         self._progress.pack(side="right", padx=scale(14), pady=scale(8))
@@ -299,6 +306,16 @@ class App:
         self.root.after(POLL_INTERVAL_MS, self._poll)
 
     def _finish_task(self, message: str, succeeded: bool, on_done=None) -> None:
+        # 任务历史单点记录：所有视图任务都经 submit → runner → 此处，
+        # 记录失败静默（core.task_history 的纪律），不影响收尾 UI
+        seconds = (
+            time.monotonic() - self._task_started
+            if self._task_started is not None else 0.0
+        )
+        self._task_started = None
+        from ..core.task_history import record
+
+        record(self._task_title, succeeded, seconds, message)
         for run_button in self._run_buttons:
             run_button.state(["!disabled"])
         self._progress.stop()
