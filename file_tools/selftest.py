@@ -287,21 +287,25 @@ def _test_media_grab(workdir: Path) -> None:
         listed = grab_media(f"{base}/index.html", workdir / "out_list", list_only=True)
         assert listed.found == 2, f"嗅探数量不符: {listed.found}"
 
+        # 本测试覆盖的是 legacy 自研内核（yt-dlp 兜底路径），须显式指定引擎
         # m3u8 合并下载（不封装 MP4，断言合并内容与分段一致）
         out = workdir / "out_merge"
-        summary = grab_media(f"{base}/index.html", out, picks=[1], to_mp4=False)
+        summary = grab_media(f"{base}/index.html", out, picks=[1], to_mp4=False,
+                             engine="legacy")
         merged = out / "video.ts"
         assert summary.downloaded == 1 and merged.exists(), "m3u8 合并下载失败"
         assert merged.read_bytes() == b"".join(plaintext), "合并内容与分段不一致"
 
         # 直接给 m3u8 地址也能下载
-        direct = grab_media(f"{base}/video.m3u8", workdir / "out_direct", to_mp4=False)
+        direct = grab_media(f"{base}/video.m3u8", workdir / "out_direct", to_mp4=False,
+                            engine="legacy")
         assert direct.downloaded == 1, "直连 m3u8 下载失败"
 
         # AES-128 解密路径（无 pycryptodome 时跳过）
         if AES is not None:
             out_enc = workdir / "out_enc"
-            summary = grab_media(f"{base}/enc.m3u8", out_enc, to_mp4=False)
+            summary = grab_media(f"{base}/enc.m3u8", out_enc, to_mp4=False,
+                                 engine="legacy")
             decrypted = out_enc / "enc.ts"
             assert summary.downloaded == 1 and decrypted.exists(), "AES-128 m3u8 下载失败"
             assert decrypted.read_bytes() == plaintext[0], "AES-128 解密结果不一致"
@@ -332,6 +336,184 @@ def _test_media_grab(workdir: Path) -> None:
                 p.exists() and p.stat().st_size > 0 for p in frames
             ), "预览抽帧失败"
             assert "视频" in info, f"流信息不符: {info}"
+    finally:
+        server.shutdown()
+
+
+def _test_download_engine(workdir: Path) -> None:
+    from .core import download_engine as de
+    from .core.media_grab import MediaResource
+
+    # 引擎解析：legacy 直通；auto 按安装情况回退；强制 ytdlp 未装时报错
+    assert de.resolve_engine("legacy") == "legacy"
+    assert de.resolve_engine("auto", available=True) == "ytdlp"
+    assert de.resolve_engine("auto", available=False) == "legacy"
+    try:
+        de.resolve_engine("ytdlp", available=False)
+        raise AssertionError("强制 ytdlp 未安装应报错")
+    except RuntimeError:
+        pass
+    try:
+        de.resolve_engine("nope")
+        raise AssertionError("未知引擎应报错")
+    except ValueError:
+        pass
+
+    # opts 构造：headers 透传（空值过滤）、outtmpl、overwrite 语义、合流格式与 ffmpeg 定位
+    opts = de.build_ytdlp_opts(
+        outtmpl=str(workdir / "o" / "v.%(ext)s"),
+        headers={"Referer": "https://p/", "Cookie": "k=1", "X-Empty": ""},
+        format_spec="bv*+ba/b",
+        overwrite=False,
+        to_mp4=True,
+        concurrency=4,
+        timeout=12,
+    )
+    assert opts["outtmpl"].endswith("v.%(ext)s"), "outtmpl 未透传"
+    assert opts["http_headers"] == {"Referer": "https://p/", "Cookie": "k=1"}, "headers 透传不符"
+    assert opts["overwrites"] is False, "overwrite=False 应映射 overwrites: False"
+    assert opts["format"] == "bv*+ba/b" and opts["merge_output_format"] == "mp4"
+    assert opts["noplaylist"] is True and opts["concurrent_fragment_downloads"] == 4
+    assert opts["socket_timeout"] == 12 and opts.get("ffmpeg_location"), "ffmpeg 定位缺失"
+    no_mp4 = de.build_ytdlp_opts(outtmpl="x.%(ext)s", to_mp4=False)
+    assert "merge_output_format" not in no_mp4, "to_mp4=False 不应强制 mp4"
+
+    # dash 对判定：同页面 video+audio → 单次页面任务；缺边/异页 → 逐条直下
+    page = "https://www.bilibili.com/video/BV1"
+    pair = [
+        MediaResource(
+            url="https://cdn.example.com/v.m4s", suffix=".m4s", kind="dash-video",
+            title="测试视频", label="1080P avc 时长2分钟", page_url=page,
+            headers={"Referer": "https://www.bilibili.com/"},
+        ),
+        MediaResource(
+            url="https://cdn.example.com/a.m4s", suffix=".m4s", kind="dash-audio",
+            title="测试视频", label="音频 192kbps", page_url=page,
+            headers={"Referer": "https://www.bilibili.com/"},
+        ),
+    ]
+    out = workdir / "pair_out"
+    tasks = de.plan_ytdlp_tasks(pair, out)
+    assert len(tasks) == 1 and tasks[0].is_dash_pair, "成对勾选应合并为一个页面任务"
+    assert tasks[0].url == page and tasks[0].format_spec == de.DASH_PAIR_FORMAT
+    assert "测试视频" in tasks[0].outtmpl and "%(ext)s" in tasks[0].outtmpl
+    assert tasks[0].headers.get("Referer") == "https://www.bilibili.com/"
+
+    video_only = [pair[0]]
+    tasks = de.plan_ytdlp_tasks(video_only, out)
+    assert len(tasks) == 1 and not tasks[0].is_dash_pair, "仅视频流应逐条直下"
+    assert tasks[0].url.endswith("v.m4s"), "单流任务应指向流地址"
+    assert "测试视频" in tasks[0].outtmpl and "1080P" in tasks[0].outtmpl, "单流命名应沿用 legacy 规则"
+
+    diff_page = [
+        MediaResource(url="https://cdn.example.com/v.m4s", suffix=".m4s",
+                      kind="dash-video", page_url="https://p1"),
+        MediaResource(url="https://cdn.example.com/a.m4s", suffix=".m4s",
+                      kind="dash-audio", page_url="https://p2"),
+    ]
+    assert len(de.plan_ytdlp_tasks(diff_page, out)) == 2, "异页 dash 不应配对"
+
+    # 词干中的字面 % 须转义，否则破坏 outtmpl 模板
+    tricky = de.plan_ytdlp_tasks(
+        [MediaResource(url="https://cdn.example.com/x.mp4", suffix=".mp4",
+                       kind="media", title="100% 好")], out
+    )
+    assert "100%%" in tricky[0].outtmpl, "词干 % 未转义"
+
+    # 重名跳过判定：同词干任意后缀算已有产物；.part 残留不算
+    out.mkdir(parents=True)
+    (out / "测试视频.mp4").write_bytes(b"x")
+    pair_tmpl = de.plan_ytdlp_tasks(pair, out)[0].outtmpl
+    assert de._existing_output(out, pair_tmpl) == out / "测试视频.mp4", "重名判定漏判"
+    part_dir = workdir / "part_out"
+    part_dir.mkdir()
+    (part_dir / "测试视频.mp4.part").write_bytes(b"x")
+    assert de._existing_output(part_dir, de.plan_ytdlp_tasks(pair, part_dir)[0].outtmpl) is None, \
+        ".part 残留不应算已有产物"
+
+    # 端到端：本地服务器 + yt-dlp generic 下载直链（无外网）
+    site = workdir / "yt_site"
+    site.mkdir()
+    payload = b"0123456789abcdef" * 64
+    (site / "clip.mp4").write_bytes(payload)
+    (site / "backup.mp4").write_bytes(payload)
+    server = _serve_directory(site)
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        resources = [
+            MediaResource(url=f"{base}/clip.mp4", suffix=".mp4", kind="media",
+                          headers={"Referer": f"{base}/"})
+        ]
+        out_dir = workdir / "yt_out"
+        summary = de.download_with_engine(resources, out_dir, engine="ytdlp")
+        assert summary.downloaded == 1 and summary.merged == 0, \
+            f"yt-dlp 直链下载计数不符: {summary.downloaded}"
+        saved = Path(summary.outputs[0])
+        assert saved.exists() and saved.read_bytes() == payload, "yt-dlp 下载内容与源不一致"
+
+        # 重名跳过：同词干再下一次应计入 skipped
+        again = de.download_with_engine(resources, out_dir, engine="ytdlp")
+        assert again.downloaded == 0 and again.skipped == 1, "重名应跳过而非重下"
+
+        # yt-dlp 的 m3u8 路径：本地播放列表端到端。分段须是真实 TS 且编码带
+        # 分辨率信息（H.264 自带 SPS/PPS，mpeg4 裸流重封装 MP4 会因
+        # dimensions not set 失败），清单须带 EXTINF；无 ffmpeg 时跳过
+        from .core.media_to_mp4 import find_ffmpeg, run_hidden
+
+        ffmpeg = find_ffmpeg()
+        hls_m3u8 = site / "hls.m3u8"
+        if ffmpeg is not None:
+            run_hidden(
+                [
+                    ffmpeg, "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i", "testsrc=duration=2:size=160x120:rate=10",
+                    "-c:v", "libx264", "-preset", "ultrafast",
+                    "-f", "segment", "-segment_time", "1", "-reset_timestamps", "1",
+                    str(site / "seg%d.ts"), "-y",
+                ],
+                capture_output=True, text=True, timeout=120, check=False,
+            )
+            segments = sorted(site.glob("seg*.ts"))
+            if segments:
+                lines = ["#EXTM3U", "#EXT-X-TARGETDURATION:2"]
+                for segment in segments:
+                    lines += ["#EXTINF:1.0,", segment.name]
+                lines.append("#EXT-X-ENDLIST")
+                hls_m3u8.write_text("\n".join(lines), encoding="ascii")
+        if hls_m3u8.is_file():
+            out_hls = workdir / "yt_hls"
+            summary = de.download_with_engine(
+                [MediaResource(url=f"{base}/hls.m3u8", suffix=".m3u8", kind="m3u8",
+                               title="hls视频")],
+                out_hls, engine="ytdlp",
+            )
+            produced = list(out_hls.glob("hls视频.*")) if out_hls.is_dir() else []
+            assert summary.downloaded == 1 and produced \
+                and produced[0].stat().st_size > 0, "yt-dlp m3u8 下载失败"
+
+        # 主地址失败 → fallback_urls 逐个兜底（对齐 legacy 候选循环语义）
+        fallback = [
+            MediaResource(url=f"{base}/missing.mp4", suffix=".mp4", kind="media",
+                          fallback_urls=[f"{base}/backup.mp4"])
+        ]
+        out_fb = workdir / "yt_fb"
+        summary = de.download_with_engine(fallback, out_fb, engine="ytdlp")
+        assert summary.downloaded == 1 and (out_fb / "missing.mp4").exists() \
+            and (out_fb / "missing.mp4").read_bytes() == payload, "备用地址兜底失败"
+
+        # 未装 yt-dlp 时 auto → legacy 自动回退（替换可用性探测）
+        original = de._yt_dlp_available
+        de._yt_dlp_available = lambda: False
+        try:
+            out_legacy = workdir / "legacy_out"
+            summary = de.download_with_engine(
+                [MediaResource(url=f"{base}/clip.mp4", suffix=".mp4", kind="media")],
+                out_legacy, engine="auto",
+            )
+            assert summary.downloaded == 1, "auto 回退 legacy 下载失败"
+            assert (out_legacy / "clip.mp4").read_bytes() == payload, "legacy 回退内容不一致"
+        finally:
+            de._yt_dlp_available = original
     finally:
         server.shutdown()
 
@@ -519,6 +701,7 @@ def main() -> int:
             ("image_convert", _test_image_convert),
             ("media_to_mp4", _test_media_tool),
             ("media_grab", _test_media_grab),
+            ("download_engine", _test_download_engine),
             ("download_images", _test_download_images),
             ("fanqie_novel", _test_fanqie_novel),
             ("browser_sniff", _test_browser_sniff),

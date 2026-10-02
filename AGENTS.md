@@ -59,8 +59,9 @@
 - 内置 bilibili 适配：页面 `__INITIAL_STATE__` 取 bvid/cid/title，调 `x/player/playurl`（无需 wbi）拿 DASH 流，产出 `dash-video`/`dash-audio` 资源（带清晰度标签），下载主 CDN 失败自动换 `backupUrl`；选中视频+音频后用内置 ffmpeg 合流为以视频标题命名的 MP4。
 - m3u8：主播放列表自动选最高带宽，分段并发下载合并（瞬时 5xx/限流失败的分段收尾串行补抓两轮）；AES-128 分段（`EXT-X-KEY`）依赖 `pycryptodome`/`cryptography`（懒导入）；m3u8 输出文件名优先用页面标题。
 - 资源统一为 `MediaResource`（url/suffix/kind/label/size/title/headers/fallback_urls）；`sniff_media()` 直连嗅探（`probe=True` 时并发 HEAD 探测体积，上限 `PROBE_LIMIT`）、`sniff_media_browser()` 浏览器嗅探、`download_resources()` 下载选中资源（GUI 用）、`grab_media()` 保留序号流程（CLI/菜单用，先 `--list` 看明细再 `--pick`）。
+- **下载引擎分层**（`core/download_engine.py`，下载执行默认交给 yt-dlp 库内嵌）：`download_resources(..., engine="auto")` 按 `find_spec("yt_dlp")` 判定——能用 yt-dlp 就走它（m3u8/AES/直链由其提取器原生处理；B 站 dash-video+dash-audio 成对勾选时对 `page_url` 单次调用 `-f "bv*+ba/b"` 原生选清晰度+合流；`fallback_urls` 在主地址 DownloadError 后逐个换候选；`overwrite=False` 映射 `overwrites: False`，按输出词干匹配任意后缀保守跳过），未装则回退 legacy；`ytdlp`/`legacy` 可强制（CLI `--engine`、GUI「下载引擎」单选）。opts 构造（`build_ytdlp_opts`）与 dash 对判定（`dash_pair_page_url`）是纯函数可离线测试；进度经 progress_hooks 按 10% 节流 print（`noprogress` 抑制原生刷屏行）；ffmpeg 复用 `find_ffmpeg()` 经 `ffmpeg_location` 传入。**嗅探/预览/标注链路与 `_TransportChain` 保持自研不动**；`download_direct`/`download_m3u8`/`_finalize_output`/`_mux_dash`/`_merge_dash_pairs` 降为 legacy 专用（默认不走，删除是 BACKLOG B1）。
 - 预览分模式：直连模式用 `capture_preview_frames()`（内置 ffmpeg 抽帧，`gui/preview.py` 软件内缩略图，音频流只解析流信息）；浏览器模式用 `open_external_preview()`——本地 127.0.0.1 预览代理（`_PreviewProxy`，空闲 30 分钟自动关闭），优先在嗅探时打开的浏览器同一窗口开新标签页（回退系统浏览器打开），m3u8 经代理改写后由内置 `data/hls.min.js`（hls.js v1.5.20，Apache-2.0）播放——hls 播放页必须内联 `<script src="/hls.js">`（缺失则 Hls 未定义、预览放不出，selftest 有断言），代理转发自动走多级传输回退。
-- 独立入口：`python -m file_tools.core.media_grab URL [-o OUTPUT] [--mode {direct,browser}] [--list] [--probe] [--pick N ...] [--all] [--no-mp4] [--referer URL] [--max-capture-seconds N]`。
+- 独立入口：`python -m file_tools.core.media_grab URL [-o OUTPUT] [--mode {direct,browser}] [--engine {auto,ytdlp,legacy}] [--list] [--probe] [--pick N ...] [--all] [--no-mp4] [--referer URL] [--max-capture-seconds N]`。
 
 ### `file_tools/core/browser_sniff.py`
 
@@ -114,8 +115,8 @@
 
 ### `file_tools/selftest.py` 与 `build_exe.py`
 
-- `python -m file_tools.selftest`（或 `FileTools.exe --selftest`）在当前环境冒烟测试各项核心工具（media_grab 用本地 HTTP 服务器测试嗅探/合并/AES 解密/ffmpeg 抽帧预览；download_images 用本地服务器测试下载；image_rename 用临时目录测试合并/追加/预览/递归；image_convert 用 PIL 造图测试透明垫白底/坏图容错/递归/删原图；fanqie_novel 与 browser_sniff 仅离线测试纯函数——媒体识别/CDP 事件消费/父域计算/播放列表改写；preview_proxy 离线测试本地预览代理的透传与 m3u8 改写，均不依赖外网、不启动浏览器），全部通过退出码 0。
-- `python build_exe.py` 用 PyInstaller 打包 GUI 为 `dist/FileTools/FileTools.exe`（目录模式，`--onefile` 为单文件）；`--collect-all imageio_ffmpeg` 把 ffmpeg 打进产物，`core/data/`（番茄后端、hls.min.js）整体随包；构建前需 `pip install pyinstaller`。
+- `python -m file_tools.selftest`（或 `FileTools.exe --selftest`）在当前环境冒烟测试各项核心工具（media_grab 用本地 HTTP 服务器测试嗅探/legacy 内核的合并/AES 解密/ffmpeg 抽帧预览；download_engine 测引擎解析、yt-dlp opts 纯函数、dash 对判定、本地服务器的 yt-dlp 直链与 m3u8 端到端下载、重名跳过、备用地址兜底与未装 yt-dlp 时 auto→legacy 回退；download_images 用本地服务器测试下载；image_rename 用临时目录测试合并/追加/预览/递归；image_convert 用 PIL 造图测试透明垫白底/坏图容错/递归/删原图；fanqie_novel 与 browser_sniff 仅离线测试纯函数——媒体识别/CDP 事件消费/父域计算/播放列表改写；preview_proxy 离线测试本地预览代理的透传与 m3u8 改写，均不依赖外网、不启动浏览器），全部通过退出码 0。
+- `python build_exe.py` 用 PyInstaller 打包 GUI 为 `dist/FileTools/FileTools.exe`（目录模式，`--onefile` 为单文件）；`--collect-all imageio_ffmpeg` 把 ffmpeg 打进产物，`--collect-all yt_dlp` 把默认下载引擎及其提取器插件整体随包，`core/data/`（番茄后端、hls.min.js）整体随包；构建前需 `pip install pyinstaller`。
 
 ## 环境与分支
 

@@ -80,6 +80,20 @@ class GrabView(ToolView):
         ).grid(row=row, column=2, sticky="w")
 
         row += 1
+        form_label(body, row, "下载引擎")
+        self.engine = tk.StringVar(value="auto")
+        radio_row(
+            body, row, self.engine,
+            [("自动（推荐）", "auto"), ("yt-dlp", "ytdlp"), ("内置（兜底）", "legacy")],
+        )
+        ttk.Label(
+            body,
+            text="自动：装有 yt-dlp 时交给它下载（m3u8/AES/反爬由其处理），"
+                 "否则回退内置引擎",
+            style="Hint.TLabel",
+        ).grid(row=row, column=2, sticky="w")
+
+        row += 1
         form_label(body, row, "选项")
         self.to_mp4 = tk.BooleanVar(value=True)
         check_row(
@@ -421,11 +435,12 @@ class GrabView(ToolView):
             "media_downloads"
         )
         to_mp4 = self.to_mp4.get()
+        engine = self.engine.get()
 
         def worker() -> str:
             from ...core.media_grab import download_resources
 
-            summary = download_resources(selected, output_dir, to_mp4=to_mp4)
+            summary = download_resources(selected, output_dir, to_mp4=to_mp4, engine=engine)
             return (
                 f"下载完成：下载 {summary.downloaded}，合流 {summary.merged}，"
                 f"跳过 {summary.skipped}，失败 {summary.failed}，详见运行日志。"

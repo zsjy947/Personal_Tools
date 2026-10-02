@@ -1466,12 +1466,28 @@ def download_resources(
     referer: str | None = None,
     overwrite: bool = False,
     keep_segments: bool = False,
+    engine: str = "auto",
 ) -> GrabSummary:
     """下载已选中的媒体资源（GUI 嗅探列表勾选后调用）。
 
-    下载走多级传输回退（直连 → 指纹 → SNI 精简 → 浏览器引擎），
-    浏览器模式捕获的资源无需特殊处理即可下载。
+    engine: auto（能导入 yt_dlp 就交给 yt-dlp，否则走本函数的自研内核）/
+    ytdlp / legacy。本函数体即 legacy 自研多级传输链路（直连 → 指纹 →
+    SNI 精简 → 浏览器引擎），浏览器模式捕获的资源无需特殊处理即可下载。
     """
+    if engine != "legacy":
+        from .download_engine import download_with_engine
+
+        return download_with_engine(
+            resources,
+            output_dir,
+            concurrency=concurrency,
+            timeout=timeout,
+            to_mp4=to_mp4,
+            referer=referer,
+            overwrite=overwrite,
+            keep_segments=keep_segments,
+            engine=engine,
+        )
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     summary = GrabSummary(found=len(resources))
@@ -1547,10 +1563,12 @@ def grab_media(
     keep_segments: bool = False,
     probe: bool = False,
     max_capture_seconds: float = 900,
+    engine: str = "auto",
 ) -> GrabSummary:
     """嗅探并（可选）下载媒体资源，CLI 与交互菜单共用。
 
     mode: direct 直连模式（默认）/ browser 浏览器模式。
+    engine: 下载引擎，auto/ytdlp/legacy（见 download_engine）。
     """
     if mode == "browser":
         resources = sniff_media_browser(url, max_seconds=max_capture_seconds, referer=referer)
@@ -1592,6 +1610,7 @@ def grab_media(
         referer=referer,
         overwrite=overwrite,
         keep_segments=keep_segments,
+        engine=engine,
     )
 
 
@@ -1916,6 +1935,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-mp4", action="store_true", help="不封装 MP4，保留合并后的 TS")
     parser.add_argument("--overwrite", action="store_true", help="覆盖已有输出文件")
     parser.add_argument("--keep-segments", action="store_true", help="保留临时分段目录（调试用）")
+    parser.add_argument(
+        "--engine",
+        choices=("auto", "ytdlp", "legacy"),
+        default="auto",
+        help="下载引擎：auto 安装了 yt-dlp 就用（默认）；ytdlp 强制 yt-dlp；"
+        "legacy 自研多级传输内核兜底",
+    )
     return parser
 
 
@@ -1938,6 +1964,7 @@ def main(argv: list[str] | None = None) -> int:
             keep_segments=args.keep_segments,
             probe=args.probe,
             max_capture_seconds=args.max_capture_seconds,
+            engine=args.engine,
         )
     except (requests.RequestException, OSError, RuntimeError, ValueError) as exc:
         print(f"错误: {exc}", file=sys.stderr)
