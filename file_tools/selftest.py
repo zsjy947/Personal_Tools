@@ -879,6 +879,132 @@ def _test_preview_proxy(workdir: Path) -> None:
         server.shutdown()
 
 
+def _test_lan_share(workdir: Path) -> None:
+    import io
+    import os
+    from urllib.parse import quote
+
+    import requests as _requests
+
+    from .core.lan_share import LanShare, Share, _parse_multipart
+
+    data_dir = workdir / "lan_userdata"
+    os.environ["FILE_TOOLS_DATA_DIR"] = str(data_dir)
+    logs = io.StringIO()
+    try:
+        read_dir = workdir / "lan_read"
+        write_dir = workdir / "lan_write"
+        read_dir.mkdir()
+        write_dir.mkdir()
+        payload = b"LAN-SHARE-CONTENT-" * 32
+        (read_dir / "video.mp4").write_bytes(payload)
+        (read_dir / "sub").mkdir()
+        (read_dir / "sub" / "deep.txt").write_text("深层数据")
+
+        lan = LanShare(log_cb=logs.write)
+        share_url = lan.start(
+            [Share(path=str(read_dir)), Share(path=str(write_dir), writable=True)],
+            token="selftest-token", host="127.0.0.1", port=0,
+        )
+        # 对外分享的 url 用局域网 IP；本测试直接访问实际绑定的 127.0.0.1
+        assert share_url.startswith("http://") and "token=selftest-token" in share_url, \
+            f"分享 URL 应含局域网地址与 token: {share_url}"
+        try:
+            base = f"http://127.0.0.1:{lan._server.server_address[1]}"
+            auth = {"X-Token": "selftest-token"}
+
+            # 无 token / 错 token → 403
+            assert _requests.get(base + "/", timeout=10).status_code == 403, "无 token 应 403"
+            bad = _requests.get(base + "/?token=wrong", timeout=10)
+            assert bad.status_code == 403, "错 token 应 403"
+
+            # 首页与目录浏览
+            home = _requests.get(f"{base}/?token=selftest-token", timeout=10)
+            assert home.status_code == 200 and "video.mp4" not in home.text
+            assert "lan_read" in home.text and "可上传" in home.text, "首页应列出共享目录"
+            browse = _requests.get(
+                f"{base}/browse?dir=0&p=&token=selftest-token", timeout=10
+            )
+            assert browse.status_code == 200 and "video.mp4" in browse.text, "目录列表应含文件"
+
+            # 子目录进入与下载（内容与源文件一致）
+            deep = _requests.get(
+                f"{base}/download?dir=0&p={quote('sub/deep.txt', safe='')}"
+                f"&token=selftest-token",
+                timeout=10,
+            )
+            assert deep.status_code == 200 and deep.text == "深层数据", "子目录文件应可下载"
+            video = _requests.get(
+                f"{base}/download?dir=0&p=video.mp4&token=selftest-token", timeout=10
+            )
+            assert video.content == payload, "下载内容应与源文件一致"
+
+            # `..` 穿越 → 403；白名单外路径（dir= 越界）→ 400/403
+            escape_path = quote("..\\lan_write", safe="")
+            escape = _requests.get(
+                f"{base}/download?dir=0&p={escape_path}&token=selftest-token",
+                timeout=10,
+            )
+            assert escape.status_code == 403, "穿越白名单应 403"
+            outside = _requests.get(
+                f"{base}/download?dir=9&p=x&token=selftest-token", timeout=10
+            )
+            assert outside.status_code in (400, 403), "白名单外索引应拒绝"
+
+            # multipart 纯函数解析：文件名与内容
+            body = (
+                b"--BND\r\nContent-Disposition: form-data; name=\"file\"; "
+                b"filename=\"phone.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n"
+                b"\xff\xd8JPEGDATA\r\n--BND--\r\n"
+            )
+            parsed = _parse_multipart(body, "BND")
+            assert parsed == ("phone.jpg", b"\xff\xd8JPEGDATA"), f"multipart 解析不符: {parsed}"
+
+            # 上传落盘（重名自动加序号，不覆盖）
+            def upload(dir_index: int, name: str, content: bytes):
+                boundary = "XBOUND"
+                part = (
+                    f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; "
+                    f"filename=\"{name}\"\r\n\r\n"
+                ).encode() + content + f"\r\n--{boundary}--\r\n".encode()
+                return _requests.post(
+                    f"{base}/upload?dir={dir_index}&token=selftest-token",
+                    data=part,
+                    headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+                    timeout=10,
+                )
+
+            first = upload(1, "照片.jpg", b"one")
+            assert first.status_code == 200 and (write_dir / "照片.jpg").read_bytes() == b"one"
+            second = upload(1, "照片.jpg", b"two")
+            assert second.status_code == 200 and (write_dir / "照片-1.jpg").read_bytes() == b"two", \
+                "重名上传应加序号"
+            (write_dir / "照片.jpg").write_bytes(b"original")
+
+            # 只读目录上传 → 403
+            readonly = upload(0, "no.txt", b"x")
+            assert readonly.status_code == 403, "只读目录应拒绝上传"
+
+            # /api/scan 返回 JSON 计数（无规则时全 0）
+            scan = _requests.post(
+                f"{base}/api/scan?token=selftest-token", timeout=30
+            )
+            assert scan.status_code == 200, "扫描端点应可用"
+            counts = scan.json()
+            assert {"processed", "failed", "waiting"} <= set(counts), f"扫描计数缺字段: {counts}"
+        finally:
+            lan.stop()
+        assert not lan.running
+        try:
+            stopped = _requests.get(base + "/", timeout=5)
+            assert stopped.status_code in (400, 403), "停止后应不可访问"
+        except _requests.ConnectionError:
+            pass  # 端口已关闭：连接被拒即服务确已停止
+        assert "[局域网]" in logs.getvalue(), "请求日志应经回调写出"
+    finally:
+        os.environ.pop("FILE_TOOLS_DATA_DIR", None)
+
+
 def main() -> int:
     failures = []
     with tempfile.TemporaryDirectory(prefix="file_tools_selftest_") as tmp:
@@ -898,6 +1024,7 @@ def main() -> int:
             ("task_history", _test_task_history),
             ("flow_watch", _test_flow_watch),
             ("dedupe_images", _test_dedupe_images),
+            ("lan_share", _test_lan_share),
         ):
             try:
                 test(workdir)

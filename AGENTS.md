@@ -96,6 +96,25 @@
 - 预览分模式：直连模式用 `capture_preview_frames()`（内置 ffmpeg 抽帧，`gui/preview.py` 软件内缩略图，音频流只解析流信息）；浏览器模式用 `open_external_preview()`——本地 127.0.0.1 预览代理（`_PreviewProxy`，空闲 30 分钟自动关闭），优先在嗅探时打开的浏览器同一窗口开新标签页（回退系统浏览器打开），m3u8 经代理改写后由内置 `data/hls.min.js`（hls.js v1.5.20，Apache-2.0）播放——hls 播放页必须内联 `<script src="/hls.js">`（缺失则 Hls 未定义、预览放不出，selftest 有断言），代理转发自动走多级传输回退。
 - 独立入口：`python -m file_tools.core.media_grab URL [-o OUTPUT] [--mode {direct,browser}] [--engine {auto,ytdlp,legacy}] [--list] [--probe] [--pick N ...] [--all] [--no-mp4] [--referer URL] [--max-capture-seconds N]`。
 
+### `file_tools/core/lan_share.py`
+
+- 局域网文件流服务（纯标准库 `ThreadingHTTPServer`）：默认端口 **38475**（避开番茄后端
+  38474）；启动生成会话 token（`secrets.token_urlsafe(16)`），所有端点校验 `?token=`
+  或 `X-Token` 头（`compare_digest`），失败 403。
+- 共享模型：目录白名单（`Share(path, writable)`），**至多一个可上传**；请求路径经
+  `resolve()` 后必须落在白名单目录内（`_safe_join`，防 `..` 穿越与符号链接逃逸）。
+- 端点（HTML 全内联无外部依赖）：`GET /` 总览+上传表单、`GET /browse?dir=&p=` 目录列表
+  （名称/大小/修改时间，子目录可进入）、`GET /download` 流式下载（Range 不做，BACKLOG
+  B5）、`POST /upload`（手写最小 multipart 解析 `_parse_multipart`，重名序号递增）、
+  `POST /api/scan`（触发 `flow_watch.scan_now()` 返回 JSON 计数）。每个请求一行日志经
+  回调进 GUI 日志面板。
+- `LanShare.start(shares, port, token=None, host)` 返回可分享 URL（`lan_ip()` 用 UDP
+  connect 技巧取局域网 IP，失败回退主机名）；atexit 注册 stop；App 窗口关闭一并停。
+- 明确不做（BACKLOG B5）：账号体系/HTTPS/二维码/Range 断点/独立常驻进程。
+- CLI 临时分享：`python -m file_tools.core.lan_share 目录... [--port N]`（第一个目录可
+  上传）；GUI 视图 `lan_view.py`（总开关默认关 + 端口 + 共享列表 + 大字可复制 URL），
+  服务状态不持久化。
+
 ### `file_tools/core/browser_sniff.py`
 
 - 浏览器模式的全部 CDP 机制（依赖 `websocket-client`）：
@@ -150,12 +169,12 @@
 - `app.py` `main()`：创建根窗口后先 `withdraw()`，构建与居中完成后再 `deiconify()` 一次性显示——防止启动时“先小窗后放大”的闪烁，勿改动此顺序。`show_view()` 切入时调用视图的 `on_show()` 钩子（需要刷新数据的视图覆写）。
 - `runner.py`：任务在后台线程执行，print 经队列交给主线程，同一时间只允许一个任务；`submit()` 支持可选 `on_done(message, succeeded)` 完成回调（主线程执行，用于视图刷新嗅探结果）；`post_log()` 供监控线程/局域网服务等非任务线程安全注入日志（由 `_poll` 统一 drain）。
 - 常驻后台组件（监控线程/局域网服务）不属于 runner 单任务体系，挂在 App（`app.flow_watch` / `app.lan_share`），日志经 `app.watch_log()` 进队列；`WM_DELETE_WINDOW` → `App._on_close()` 统一停止后销毁窗口。
-- `views/`：每个工具一个视图类，**视图协议契约固化在 `base.py` docstring**（ID/TITLE/SUBTITLE/NAV/RUN_TEXT + `build()` + `_run()` + `app.submit` 提交纪律 + worker 内懒导入核心模块 + `on_show()` 刷新钩子），新视图照此办理并在 `views/__init__.py` 按 `VIEW_GROUPS` 分组注册；核心模块在 worker 内懒导入。`grab_view` 为两段式：选模式（直连/浏览器）→ 嗅探 → 资源表格（勾选/全选/预览/复制链接，双击行预览）→ 下载选中（含「下载引擎」单选 auto/ytdlp/legacy）；直连模式预览在软件内抽帧，浏览器模式经本地代理在系统浏览器播放；`novel_view` 为搜索列表 + 下载表单（格式/章节范围/代理）；`rename_view` 为源路径列表（Treeview 多选，添加文件夹/图片、移除选中）+ 输出目录 + 统一名称，三场景（重命名/合并/追加）共用一次提交；`convert_view` 为源路径（文件/目录双浏览按钮）+ 格式单选 + 质量；`history_view` 为任务历史只读表（刷新/清空，双击行 Toplevel 看完整消息，`on_show` 重读）；`flow_view` 为监控规则表（总开关/撤销上一轮/规则 Toplevel 表单）；`dedupe_view` 为重复图片扫描确认；`widgets.py` 的表单辅助照常复用。
+- `views/`：每个工具一个视图类，**视图协议契约固化在 `base.py` docstring**（ID/TITLE/SUBTITLE/NAV/RUN_TEXT + `build()` + `_run()` + `app.submit` 提交纪律 + worker 内懒导入核心模块 + `on_show()` 刷新钩子），新视图照此办理并在 `views/__init__.py` 按 `VIEW_GROUPS` 分组注册；核心模块在 worker 内懒导入。`grab_view` 为两段式：选模式（直连/浏览器）→ 嗅探 → 资源表格（勾选/全选/预览/复制链接，双击行预览）→ 下载选中（含「下载引擎」单选 auto/ytdlp/legacy）；直连模式预览在软件内抽帧，浏览器模式经本地代理在系统浏览器播放；`novel_view` 为搜索列表 + 下载表单（格式/章节范围/代理）；`rename_view` 为源路径列表（Treeview 多选，添加文件夹/图片、移除选中）+ 输出目录 + 统一名称，三场景（重命名/合并/追加）共用一次提交；`convert_view` 为源路径（文件/目录双浏览按钮）+ 格式单选 + 质量；`history_view` 为任务历史只读表（刷新/清空，双击行 Toplevel 看完整消息，`on_show` 重读）；`flow_view` 为监控规则表（总开关/撤销上一轮/规则 Toplevel 表单）；`dedupe_view` 为重复图片扫描确认；`lan_view` 为局域网共享总开关（默认关 + 端口 + 共享白名单 + 可复制 URL）；`widgets.py` 的表单辅助照常复用。
 - 入口：`python -m file_tools.gui`、交互菜单选项 9、`FileTools.exe`。
 
 ### `file_tools/selftest.py` 与 `build_exe.py`
 
-- `python -m file_tools.selftest`（或 `FileTools.exe --selftest`）在当前环境冒烟测试各项核心工具（media_grab 用本地 HTTP 服务器测试嗅探/legacy 内核的合并/AES 解密/ffmpeg 抽帧预览；download_engine 测引擎解析、yt-dlp opts 纯函数、dash 对判定、本地服务器的 yt-dlp 直链与 m3u8 端到端下载、重名跳过、备用地址兜底与未装 yt-dlp 时 auto→legacy 回退；download_images 用本地服务器测试下载；image_rename 用临时目录测试合并/追加/预览/递归；image_convert 用 PIL 造图测试透明垫白底/坏图容错/递归/删原图；fanqie_novel 与 browser_sniff 仅离线测试纯函数——媒体识别/CDP 事件消费/父域计算/播放列表改写；preview_proxy 离线测试本地预览代理的透传与 m3u8 改写；task_history 用 `FILE_TOOLS_DATA_DIR` 指向临时目录测记录/截断/坏行跳过/轮转/清空；flow_watch 测临时名跳过/类别归类/后缀规范化/两轮落定与阈值等待/sort 动作与 processed 台账/undo 逆序回滚/convert 规则端到端/停止语义；dedupe_images 用 PIL 造同内容不同字节图测分组/正本选择/移入回收/回收不重扫/only 子集，均不依赖外网、不启动浏览器），全部通过退出码 0。
+- `python -m file_tools.selftest`（或 `FileTools.exe --selftest`）在当前环境冒烟测试各项核心工具（media_grab 用本地 HTTP 服务器测试嗅探/legacy 内核的合并/AES 解密/ffmpeg 抽帧预览；download_engine 测引擎解析、yt-dlp opts 纯函数、dash 对判定、本地服务器的 yt-dlp 直链与 m3u8 端到端下载、重名跳过、备用地址兜底与未装 yt-dlp 时 auto→legacy 回退；download_images 用本地服务器测试下载；image_rename 用临时目录测试合并/追加/预览/递归；image_convert 用 PIL 造图测试透明垫白底/坏图容错/递归/删原图；fanqie_novel 与 browser_sniff 仅离线测试纯函数——媒体识别/CDP 事件消费/父域计算/播放列表改写；preview_proxy 离线测试本地预览代理的透传与 m3u8 改写；task_history 用 `FILE_TOOLS_DATA_DIR` 指向临时目录测记录/截断/坏行跳过/轮转/清空；flow_watch 测临时名跳过/类别归类/后缀规范化/两轮落定与阈值等待/sort 动作与 processed 台账/undo 逆序回滚/convert 规则端到端/停止语义；dedupe_images 用 PIL 造同内容不同字节图测分组/正本选择/移入回收/回收不重扫/only 子集；lan_share 在 127.0.0.1:0 起服务（token 注入）断言鉴权/浏览/下载一致/上传落盘加序号/穿越与越界 403/`/api/scan` JSON/停止后不可达，均不依赖外网、不启动浏览器），全部通过退出码 0。
 - `python build_exe.py` 用 PyInstaller 打包 GUI 为 `dist/FileTools/FileTools.exe`（目录模式，`--onefile` 为单文件）；`--collect-all imageio_ffmpeg` 把 ffmpeg 打进产物，`--collect-all yt_dlp` 把默认下载引擎及其提取器插件整体随包，`core/data/`（番茄后端、hls.min.js）整体随包；构建前需 `pip install pyinstaller`。
 
 ## 环境与分支
