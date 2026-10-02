@@ -207,11 +207,14 @@ def build(onefile: bool) -> None:
         # 界面里的工具模块是执行任务时才导入，显式收集防止漏打包
         "--collect-submodules",
         "file_tools.core",
-        # 内置 ffmpeg（imageio-ffmpeg）、curl_cffi（指纹回退）、websocket（浏览器模式 CDP）
+        # 内置 ffmpeg（imageio-ffmpeg）、curl_cffi（指纹回退）、websocket（浏览器模式 CDP）、
+        # yt_dlp（默认下载引擎，提取器插件须整体收集）
         "--collect-all",
         "imageio_ffmpeg",
         "--collect-all",
         "curl_cffi",
+        "--collect-all",
+        "yt_dlp",
         "--hidden-import",
         "websocket",
         "--version-file",

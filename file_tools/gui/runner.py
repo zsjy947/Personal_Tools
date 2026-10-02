@@ -63,6 +63,12 @@ class TaskRunner:
         else:
             self._result_queue.put((message, True, on_done))
 
+    def post_log(self, text: str) -> None:
+        """线程安全地把文本注入日志队列（监控线程/局域网服务等非任务线程用，
+        由主线程 _poll 统一 drain，回调内不得直接碰 Tk）。"""
+        if text:
+            self._log_queue.put(text)
+
     def poll(self):
         """由主线程周期调用：刷新日志并返回 (message, succeeded) 或 None。"""
         chunks = []

@@ -22,6 +22,9 @@ downloads/
 logs/
 *.part
 
+# 本地计划文档（不入库）
+plans/
+
 # OS
 .DS_Store
 Thumbs.db
