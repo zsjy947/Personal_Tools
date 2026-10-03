@@ -56,6 +56,9 @@ class App:
         self.root = root
         self.views = {cls.ID: cls(self) for cls in VIEW_CLASSES}
         self._nav_items: dict[str, NavItem] = {}
+        self._nav_groups: dict[str, dict] = {}
+        self._view_group: dict[str, str] = {}
+        self._active_group = ""
         self._run_buttons: list[ttk.Button] = []
         self._notify_job: str | None = None
 
@@ -155,20 +158,12 @@ class App:
         nav_host = tk.Frame(bar, bg=COLORS["sidebar"])
         nav_host.pack(fill="x", padx=scale(10))
         for index, (group_title, classes) in enumerate(VIEW_GROUPS):
-            # 组头：加粗提亮、与条目文字对齐，组间用留白而非分隔线，形成两级导航
-            tk.Label(
+            self._build_nav_group(
                 nav_host,
-                text=group_title,
-                bg=COLORS["sidebar"],
-                fg=COLORS["sidebar_group"],
-                font=FONTS["nav_group"],
-                anchor="w",
-                padx=scale(14),
-            ).pack(fill="x", pady=(scale(2) if index == 0 else scale(14), scale(3)))
-            for cls in classes:
-                item = NavItem(nav_host, cls.NAV or cls.TITLE, lambda vid=cls.ID: self.show_view(vid))
-                item.pack(fill="x", pady=scale(1))
-                self._nav_items[cls.ID] = item
+                group_title,
+                classes,
+                top_pad=scale(2) if index == 0 else scale(12),
+            )
 
         tk.Label(
             bar,
@@ -177,6 +172,87 @@ class App:
             fg=COLORS["sidebar_footer"],
             font=FONTS["small"],
         ).pack(side="bottom", pady=scale(12))
+
+    def _build_nav_group(self, parent, title: str, classes, *, top_pad) -> None:
+        """一个可折叠的导航分组：默认只显示组头，点击展开/收起组内条目。
+
+        折叠是侧边栏防挤压的关键：一次只展开一个分组（手风琴），激活视图
+        所在分组自动展开，任何窗口高度下组内条目都可达。items_host 在构建
+        期就按分组顺序 pack 占位，展开/收起只增删其内部条目，位置不漂移。
+        """
+        header = tk.Frame(parent, bg=COLORS["sidebar"], cursor="hand2")
+        header.pack(fill="x", pady=(top_pad, scale(2)))
+        arrow = tk.Label(
+            header, text="▸", bg=COLORS["sidebar"],
+            fg=COLORS["sidebar_group"], font=FONTS["small"],
+        )
+        arrow.pack(side="left")
+        label = tk.Label(
+            header, text=title, bg=COLORS["sidebar"],
+            fg=COLORS["sidebar_group"], font=FONTS["nav_group"],
+            anchor="w", padx=scale(4),
+        )
+        label.pack(side="left", fill="x", expand=True)
+        items_host = tk.Frame(parent, bg=COLORS["sidebar"])
+        items_host.pack(fill="x")
+        items = []
+        for cls in classes:
+            item = NavItem(
+                items_host, cls.NAV or cls.TITLE,
+                lambda vid=cls.ID: self.show_view(vid),
+            )
+            items.append(item)
+            self._nav_items[cls.ID] = item
+            self._view_group[cls.ID] = title
+        self._nav_groups[title] = {
+            "arrow": arrow, "label": label, "items": items, "open": False,
+        }
+        for widget in (header, arrow, label):
+            widget.bind("<Button-1>", lambda _event, t=title: self._toggle_nav_group(t))
+            widget.bind("<Enter>", lambda _event, t=title: self._hover_group(t, True))
+            widget.bind("<Leave>", lambda _event, t=title: self._hover_group(t, False))
+
+    def _toggle_nav_group(self, title: str) -> None:
+        if self._nav_groups[title]["open"]:
+            self._collapse_group(title)
+        else:
+            self._expand_group(title)
+
+    def _expand_group(self, title: str) -> None:
+        """展开一个分组并收起其余分组（手风琴），侧边栏高度始终可控。"""
+        for other_title, group in self._nav_groups.items():
+            if other_title != title and group["open"]:
+                self._collapse_group(other_title)
+        group = self._nav_groups[title]
+        if not group["open"]:
+            for item in group["items"]:
+                item.pack(fill="x", pady=scale(1))
+            group["arrow"].config(text="▾")
+            group["open"] = True
+        self._paint_group_titles()
+
+    def _collapse_group(self, title: str) -> None:
+        group = self._nav_groups[title]
+        if group["open"]:
+            for item in group["items"]:
+                item.pack_forget()
+            group["arrow"].config(text="▸")
+            group["open"] = False
+        self._paint_group_titles()
+
+    def _hover_group(self, title: str, on: bool) -> None:
+        group = self._nav_groups[title]
+        if on:
+            group["label"].config(fg="#f1f5f9")
+        else:
+            self._paint_group_titles()
+
+    def _paint_group_titles(self) -> None:
+        """组头着色：激活视图所在分组常亮，其余用弱色。"""
+        for title, group in self._nav_groups.items():
+            group["label"].config(
+                fg="#f8fafc" if title == self._active_group else COLORS["sidebar_group"]
+            )
 
     def _build_body(self, parent) -> None:
         body = tk.Frame(parent, bg=COLORS["bg"])
@@ -265,6 +341,11 @@ class App:
         self._header_subtitle.config(text=view.SUBTITLE)
         for vid, item in self._nav_items.items():
             item.set_active(vid == view_id)
+        # 折叠式分组导航：激活视图所在分组自动展开（其余分组收起），
+        # 侧边栏任何窗口高度下都不挤压、组内条目全部可达
+        self._active_group = self._view_group.get(view_id, "")
+        if self._active_group:
+            self._expand_group(self._active_group)
 
     def register_run_button(self, button: ttk.Button) -> None:
         self._run_buttons.append(button)
