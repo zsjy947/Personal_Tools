@@ -962,7 +962,10 @@ def _test_lan_share(workdir: Path) -> None:
         payload = b"LAN-SHARE-CONTENT-" * 32
         (read_dir / "video.mp4").write_bytes(payload)
         (read_dir / "sub").mkdir()
-        (read_dir / "sub" / "deep.txt").write_text("深层数据")
+        # 显式 UTF-8：冻结 exe 不带 UTF-8 模式，隐式编码在中文 Windows 上落 GBK，
+        # 客户端字节比较会因编码环境不同而假失败
+        deep_content = "深层数据".encode("utf-8")
+        (read_dir / "sub" / "deep.txt").write_bytes(deep_content)
 
         lan = LanShare(log_cb=logs.write)
         share_url = lan.start(
@@ -990,13 +993,14 @@ def _test_lan_share(workdir: Path) -> None:
             )
             assert browse.status_code == 200 and "video.mp4" in browse.text, "目录列表应含文件"
 
-            # 子目录进入与下载（内容与源文件一致）
+            # 子目录进入与下载（内容与源文件一致，按字节比较，不依赖客户端字符集嗅探）
             deep = _requests.get(
                 f"{base}/download?dir=0&p={quote('sub/deep.txt', safe='')}"
                 f"&token=selftest-token",
                 timeout=10,
             )
-            assert deep.status_code == 200 and deep.text == "深层数据", "子目录文件应可下载"
+            assert deep.status_code == 200 and deep.content == deep_content, \
+                f"子目录文件应可下载 (HTTP {deep.status_code})"
             video = _requests.get(
                 f"{base}/download?dir=0&p=video.mp4&token=selftest-token", timeout=10
             )
