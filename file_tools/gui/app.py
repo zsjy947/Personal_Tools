@@ -177,8 +177,11 @@ class App:
         """一个可折叠的导航分组：默认只显示组头，点击展开/收起组内条目。
 
         折叠是侧边栏防挤压的关键：一次只展开一个分组（手风琴），激活视图
-        所在分组自动展开，任何窗口高度下组内条目都可达。items_host 在构建
-        期就按分组顺序 pack 占位，展开/收起只增删其内部条目，位置不漂移。
+        所在分组自动展开，任何窗口高度下组内条目都可达。收起时必须把
+        items_host 整体 pack_forget——Tk 的 pack_forget 不会让父容器的
+        请求高度回落，只收条目会留下占位空隙；items_host 的残留空间落在
+        侧边栏底部纯色区，视觉不可见。展开时用 after=组头 重新锚定，
+        条目组不会漂移到其他分组之后。
         """
         header = tk.Frame(parent, bg=COLORS["sidebar"], cursor="hand2")
         header.pack(fill="x", pady=(top_pad, scale(2)))
@@ -194,7 +197,7 @@ class App:
         )
         label.pack(side="left", fill="x", expand=True)
         items_host = tk.Frame(parent, bg=COLORS["sidebar"])
-        items_host.pack(fill="x")
+        items_host.pack(fill="x", after=header)
         items = []
         for cls in classes:
             item = NavItem(
@@ -205,7 +208,8 @@ class App:
             self._nav_items[cls.ID] = item
             self._view_group[cls.ID] = title
         self._nav_groups[title] = {
-            "arrow": arrow, "label": label, "items": items, "open": False,
+            "header": header, "arrow": arrow, "label": label,
+            "items_host": items_host, "items": items, "open": False,
         }
         for widget in (header, arrow, label):
             widget.bind("<Button-1>", lambda _event, t=title: self._toggle_nav_group(t))
@@ -225,6 +229,7 @@ class App:
                 self._collapse_group(other_title)
         group = self._nav_groups[title]
         if not group["open"]:
+            group["items_host"].pack(fill="x", after=group["header"])
             for item in group["items"]:
                 item.pack(fill="x", pady=scale(1))
             group["arrow"].config(text="▾")
@@ -236,6 +241,7 @@ class App:
         if group["open"]:
             for item in group["items"]:
                 item.pack_forget()
+            group["items_host"].pack_forget()
             group["arrow"].config(text="▸")
             group["open"] = False
         self._paint_group_titles()
