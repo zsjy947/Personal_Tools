@@ -340,15 +340,13 @@ class App:
             view.build(self._view_host)
         view.frame.pack(fill="both", expand=True)
         view.on_show()
-        # 切换视图只改内容自然高度、不改框架实际尺寸，主动触发一次滚动条重算
+        # 切换视图只改内容自然高度、不改框架实际尺寸，主动触发一次滚动条重算。
+        # 滚动条常驻（widgets.ScrollFrame），画布宽度恒定，一轮即可收敛到位
         self._view_host.update_idletasks()
         self._view_host._sync()
-        # 滚动条 map/unmap 会再改一次画布宽度（进出高内容视图如「网页下载」时）：
-        # 再收敛一轮并按最终宽度重设窗口 item，让事件循环里迟到的 <Configure>
-        # 算出与已绘制状态相同的结果——否则先按旧宽度绘制一帧、再收窄一帧，
-        # 就是肉眼可见的"缩放调整"闪烁
-        self._view_host.update_idletasks()
-        self._view_host._sync()
+        # 滚动位置归零：上一个视图的滚动比例对新视图无意义，带滚动条进入时
+        # 先看到中部/底部内容再跳回顶部，也是肉眼可见的闪烁
+        self._view_host.canvas.yview_moveto(0)
         self._header_title.config(text=view.TITLE)
         self._header_subtitle.config(text=view.SUBTITLE)
         for vid, item in self._nav_items.items():

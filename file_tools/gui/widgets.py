@@ -28,6 +28,10 @@ class ScrollFrame(tk.Frame):
     拉伸到视口高度（卡片照旧铺满），超出时按自然高度滚动，保证底部的执行
     按钮在任意窗口尺寸下都可达。用法与普通 Frame 相同，只是创建后不要再对
     它调用 pack/grid（画布与滚动条由构造函数布置）。
+
+    滚动条常驻映射（短内容时禁用置灰而不是退场）：滚动条的映射/退场会先改
+    画布宽度、其窗口又晚一兩帧才出现在屏幕上，是切换视图时"内容先画出、
+    滚动条后到"闪烁的根源；常驻后画布宽度恒定，视图切换没有任何映射动作。
     """
 
     def __init__(self, parent, **kwargs):
@@ -56,10 +60,11 @@ class ScrollFrame(tk.Frame):
             self._item, width=self.canvas.winfo_width(), height=max(content, viewport)
         )
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-        if content > viewport and not self.vsb.winfo_ismapped():
-            self.vsb.pack(side="right", fill="y")
-        elif content <= viewport and self.vsb.winfo_ismapped():
-            self.vsb.pack_forget()
+        # 内容放得下时禁用置灰而不是退场映射：见类 docstring
+        if content > viewport:
+            self.vsb.state(["!disabled"])
+        else:
+            self.vsb.state(["disabled"])
 
     def _on_wheel(self, event) -> None:
         try:
