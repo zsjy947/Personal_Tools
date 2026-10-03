@@ -343,6 +343,12 @@ class App:
         # 切换视图只改内容自然高度、不改框架实际尺寸，主动触发一次滚动条重算
         self._view_host.update_idletasks()
         self._view_host._sync()
+        # 滚动条 map/unmap 会再改一次画布宽度（进出高内容视图如「网页下载」时）：
+        # 再收敛一轮并按最终宽度重设窗口 item，让事件循环里迟到的 <Configure>
+        # 算出与已绘制状态相同的结果——否则先按旧宽度绘制一帧、再收窄一帧，
+        # 就是肉眼可见的"缩放调整"闪烁
+        self._view_host.update_idletasks()
+        self._view_host._sync()
         self._header_title.config(text=view.TITLE)
         self._header_subtitle.config(text=view.SUBTITLE)
         for vid, item in self._nav_items.items():
